@@ -69,15 +69,18 @@ class MGXBot(commands.Bot):
             await self.load_extension(extension)
 
         # Interaction middleware: set per-guild context before every slash command
-        @self.tree.interaction_check
+        bot_ref = self
+
         async def _guild_context_middleware(interaction: discord.Interaction) -> bool:
-            if interaction.guild_id and self.data_manager:
-                self.data_manager._current_guild_id = interaction.guild_id
-                await self.data_manager.ensure_guild_loaded(interaction.guild_id)
+            if interaction.guild_id and bot_ref.data_manager:
+                bot_ref.data_manager._current_guild_id = interaction.guild_id
+                await bot_ref.data_manager.ensure_guild_loaded(interaction.guild_id)
             else:
-                if self.data_manager:
-                    self.data_manager._current_guild_id = None
+                if bot_ref.data_manager:
+                    bot_ref.data_manager._current_guild_id = None
             return True
+
+        self.tree.interaction_check = _guild_context_middleware
 
         await self._restore_persistent_views()
 

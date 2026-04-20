@@ -9970,6 +9970,9 @@ async def on_app_command_error(interaction: discord.Interaction, error: app_comm
 
 @bot.event
 async def on_guild_role_update(before: discord.Role, after: discord.Role):
+    if bot.data_manager and after.guild:
+        bot.data_manager._current_guild_id = after.guild.id
+        await bot.data_manager.ensure_guild_loaded(after.guild.id)
     # Check if dangerous permissions were ADDED
     if not has_dangerous_perm(before.permissions) and has_dangerous_perm(after.permissions):
         # Calculate dangerous added permissions IMMEDIATELY before reverting
@@ -10023,7 +10026,11 @@ async def on_guild_role_update(before: discord.Role, after: discord.Role):
 @bot.event
 async def on_raw_reaction_add(payload):
     if payload.user_id == bot.user.id: return
-    
+
+    if bot.data_manager and payload.guild_id:
+        bot.data_manager._current_guild_id = payload.guild_id
+        await bot.data_manager.ensure_guild_loaded(payload.guild_id)
+
     if payload.message_id in bot.active_executions:
         data = bot.active_executions[payload.message_id]
         
@@ -10192,6 +10199,9 @@ async def status_cmd(interaction: discord.Interaction):
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
+    if bot.data_manager and after.guild:
+        bot.data_manager._current_guild_id = after.guild.id
+        await bot.data_manager.ensure_guild_loaded(after.guild.id)
     # Check if roles were added
     if len(before.roles) < len(after.roles):
         added_roles = [r for r in after.roles if r not in before.roles]
@@ -10837,6 +10847,12 @@ async def on_message(message: discord.Message):
         await handle_native_automod_alert_message(message)
         return
     if message.author.bot: return
+
+    if bot.data_manager and message.guild:
+        bot.data_manager._current_guild_id = message.guild.id
+        await bot.data_manager.ensure_guild_loaded(message.guild.id)
+    elif not message.guild:
+        return
 
     # Anti-Spam: Mentions
     # Check immunity
