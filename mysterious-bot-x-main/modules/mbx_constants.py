@@ -115,3 +115,16 @@ MODMAIL_PANEL_CATEGORIES = [
     ("Bot Support",     "Bugs, broken commands, or automation issues."),
     ("Partnership",     "Partnership requests and server details."),
 ]
+
+# ---------------------------------------------------------------------------
+# Multi-server / operator settings (read from environment at import time)
+# ---------------------------------------------------------------------------
+import os as _os
+
+BOT_OWNER_IDS: frozenset = frozenset(
+    int(x) for x in _os.environ.get("BOT_OWNER_IDS", "").split(",") if x.strip().isdigit()
+)
+DEV_GUILD_ID: int = int(_os.environ.get("DEV_GUILD_ID", "0") or "0")
+WHITELISTED_GUILDS: frozenset = frozenset(
+    int(x) for x in _os.environ.get("WHITELISTED_GUILDS", "").split(",") if x.strip().isdigit()
+)

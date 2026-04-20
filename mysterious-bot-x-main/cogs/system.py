@@ -4,6 +4,7 @@ from modules import mbx_system
 
 
 async def setup(bot) -> None:
+    bot.tree.add_command(mbx_system.branding_cmd)
     bot.tree.add_command(mbx_system.list_commands)
     bot.tree.add_command(mbx_system.stats)
     bot.tree.add_command(mbx_system.directory)

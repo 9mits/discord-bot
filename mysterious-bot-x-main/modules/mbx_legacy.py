@@ -868,13 +868,24 @@ def make_embed(
     author_name: Optional[str] = None,
     author_icon: Optional[str] = None,
 ) -> discord.Embed:
-    embed = discord.Embed(
-        title=title,
-        description=description,
-        color=EMBED_PALETTE.get(kind, EMBED_PALETTE["neutral"]),
-    )
-    embed.timestamp = discord.utils.utcnow()
+    color = EMBED_PALETTE.get(kind, EMBED_PALETTE["neutral"])
     footer_text = f"{BRAND_NAME} • {scope}"
+
+    # Per-guild branding — reads _configs directly to bypass the property shim
+    if guild is not None and getattr(bot, "data_manager", None) is not None:
+        try:
+            branding = bot.data_manager._configs.get(guild.id, {}).get("_branding", {})
+            hex_color = branding.get("embed_color")
+            if hex_color:
+                color = discord.Color(int(str(hex_color).lstrip("#"), 16))
+            custom_footer = str(branding.get("footer_text", "")).strip()
+            if custom_footer:
+                footer_text = f"{BRAND_NAME} • {scope} • {custom_footer}"
+        except Exception:
+            pass
+
+    embed = discord.Embed(title=title, description=description, color=color)
+    embed.timestamp = discord.utils.utcnow()
     if guild and guild.icon:
         embed.set_footer(text=footer_text, icon_url=guild.icon.url)
     else:
@@ -894,6 +905,14 @@ def brand_embed(
 ) -> discord.Embed:
     embed.timestamp = discord.utils.utcnow()
     footer_text = f"{BRAND_NAME} • {scope}"
+    if guild is not None and getattr(bot, "data_manager", None) is not None:
+        try:
+            branding = bot.data_manager._configs.get(guild.id, {}).get("_branding", {})
+            custom_footer = str(branding.get("footer_text", "")).strip()
+            if custom_footer:
+                footer_text = f"{BRAND_NAME} • {scope} • {custom_footer}"
+        except Exception:
+            pass
     if guild and guild.icon:
         embed.set_footer(text=footer_text, icon_url=guild.icon.url)
     else:
@@ -1804,6 +1823,16 @@ def build_role_landing_embed(member: discord.Member, *, is_booster: bool, limit:
 
 
 def build_modmail_panel_embed(guild: discord.Guild, *, in_dm: bool = False) -> discord.Embed:
+    # Per-guild branding overrides
+    branding = {}
+    if guild is not None and getattr(bot, "data_manager", None) is not None:
+        try:
+            branding = bot.data_manager._configs.get(guild.id, {}).get("_branding", {})
+        except Exception:
+            pass
+    banner_url = branding.get("modmail_banner_url") or MODMAIL_PANEL_BANNER_URL
+    categories = branding.get("modmail_categories") or MODMAIL_PANEL_CATEGORIES
+
     description = (
         "> Need staff help? Open a ticket below — once it's open, continue replying here in DMs."
         if in_dm
@@ -1816,15 +1845,18 @@ def build_modmail_panel_embed(guild: discord.Guild, *, in_dm: bool = False) -> d
         scope=SCOPE_SUPPORT,
         guild=guild,
     )
-    embed.add_field(name="Report", value="User reports, message links, IDs, or evidence.", inline=True)
-    embed.add_field(name="General Support", value="Server help, questions, or moderator assistance.", inline=True)
-    embed.add_field(name="Bot Support", value="Bugs, broken commands, or automation issues.", inline=True)
-    embed.add_field(name="Partnership", value="Partnership requests and server details.", inline=True)
+    for cat_name, cat_desc in categories:
+        embed.add_field(name=cat_name, value=cat_desc, inline=True)
     embed.add_field(
         name="Before You Open",
         value="> Include usernames, links, IDs, or screenshots when possible.\n> Pick the closest type so staff can route your ticket faster.",
         inline=False,
     )
+    if banner_url:
+        try:
+            embed.set_image(url=banner_url)
+        except Exception:
+            pass
     return embed
 
 
@@ -8768,13 +8800,21 @@ def check_admin(interaction: discord.Interaction) -> bool:
 def check_owner(interaction: discord.Interaction) -> bool:
     return has_permission_capability(interaction, "owner_panel")
 
+def requires_setup(interaction: discord.Interaction) -> bool:
+    """app_commands.check: rejects commands if the guild hasn't run /setup."""
+    if not interaction.guild_id:
+        return True
+    cfg = {}
+    if getattr(bot, "data_manager", None):
+        cfg = bot.data_manager._configs.get(interaction.guild_id, {})
+    if not cfg.get("_setup_complete", False):
+        raise app_commands.CheckFailure("guild_not_configured")
+    return True
+
 @tree.command(name="listcommands", description="List all available commands | admin/owner")
+@app_commands.default_permissions(administrator=True)
+@app_commands.check(check_admin)
 async def list_commands(interaction: discord.Interaction):
-    # Owner/Admin only
-    conf = bot.data_manager.config
-    if not any(r.id in {conf.get("role_admin", DEFAULT_ROLE_ADMIN), conf.get("role_owner", DEFAULT_ROLE_OWNER)} for r in interaction.user.roles):
-        await interaction.response.send_message("Access Denied.", ephemeral=True)
-        return
         
     embed = make_embed(
         "System Command Registry",
@@ -8983,7 +9023,9 @@ class ModGroup(app_commands.Group):
                     expiry = datetime.max.replace(tzinfo=timezone.utc)
                 elif dur > 0:
                     expiry = ts + timedelta(minutes=dur)
-                
+                else:
+                    continue
+
                 if dur == -1 or expiry > now:
                     member = interaction.guild.get_member(int(uid))
                     name = member.display_name if member else uid
@@ -9160,34 +9202,25 @@ class ModGroup(app_commands.Group):
 
 @tree.command(name="stats", description="Display comprehensive server-wide moderation analytics | admin")
 @app_commands.default_permissions(manage_guild=True)
+@app_commands.check(check_admin)
 async def stats(interaction: discord.Interaction, target: Optional[discord.Member] = None):
-    conf = bot.data_manager.config
-    allowed = {
-        conf.get("role_admin", DEFAULT_ROLE_ADMIN),
-        conf.get("role_owner", DEFAULT_ROLE_OWNER),
-        conf.get("role_community_manager", DEFAULT_ROLE_COMMUNITY_MANAGER)
-    }
-    if not any(r.id in allowed for r in interaction.user.roles):
-        await interaction.response.send_message("**Access Denied:** You do not have the required Admin role.", ephemeral=True)
-        return
-
     if target:
         uid = str(target.id)
         cases = get_mod_cases(uid)
-        
+
         # Check if user is currently staff or has history
-        is_staff_member = False
+        target_is_staff = False
         if target.guild_permissions.administrator:
-            is_staff_member = True
+            target_is_staff = True
         else:
             mod_role_ids = bot.data_manager.config.get("mod_roles", [])
             if mod_role_ids:
                 if any(r.id in mod_role_ids for r in target.roles):
-                    is_staff_member = True
+                    target_is_staff = True
             elif target.guild_permissions.moderate_members:
-                is_staff_member = True
-        
-        if not is_staff_member and not cases:
+                target_is_staff = True
+
+        if not target_is_staff and not cases:
             await interaction.response.send_message(f"{target.mention} is not a staff member and has no recorded history.", ephemeral=True)
             return
 
@@ -9257,16 +9290,6 @@ async def stats(interaction: discord.Interaction, target: Optional[discord.Membe
 @app_commands.default_permissions(administrator=True)
 @app_commands.check(check_admin)
 async def directory(interaction: discord.Interaction):
-    conf = bot.data_manager.config
-    allowed = {
-        conf.get("role_admin", DEFAULT_ROLE_ADMIN),
-        conf.get("role_owner", DEFAULT_ROLE_OWNER),
-        conf.get("role_community_manager", DEFAULT_ROLE_COMMUNITY_MANAGER)
-    }
-    if not any(r.id in allowed for r in interaction.user.roles):
-        await interaction.response.send_message("**Access Denied:** You do not have the required Admin role.", ephemeral=True)
-        return
-
     await interaction.response.defer(ephemeral=True)
     
     admins = []
@@ -9705,6 +9728,84 @@ async def automod_cmd(interaction: discord.Interaction):
         return
     await interaction.response.send_message(embed=build_automod_dashboard_embed(interaction.guild), view=AutoModDashboardView(), ephemeral=True)
 
+@tree.command(name="branding", description="Customize the bot's look for this server | admin")
+@app_commands.default_permissions(administrator=True)
+@app_commands.check(check_admin)
+async def branding_cmd(interaction: discord.Interaction):
+    await interaction.response.send_modal(BrandingModal())
+
+
+class BrandingModal(discord.ui.Modal, title="Server Branding"):
+    embed_color = discord.ui.TextInput(
+        label="Embed Color (hex, e.g. #FF9900)",
+        placeholder="#FF9900",
+        required=False,
+        max_length=9,
+    )
+    footer_text = discord.ui.TextInput(
+        label="Footer Text (appended to all embeds)",
+        placeholder="My Community",
+        required=False,
+        max_length=64,
+    )
+    bot_nickname = discord.ui.TextInput(
+        label="Bot Nickname in this server",
+        placeholder="ModBot",
+        required=False,
+        max_length=32,
+    )
+    modmail_banner = discord.ui.TextInput(
+        label="Modmail Panel Banner URL",
+        placeholder="https://...",
+        required=False,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        branding: dict = {}
+
+        raw_color = self.embed_color.value.strip()
+        if raw_color:
+            try:
+                int(raw_color.lstrip("#"), 16)
+                branding["embed_color"] = raw_color if raw_color.startswith("#") else f"#{raw_color}"
+            except ValueError:
+                await interaction.response.send_message(
+                    "**Invalid hex color.** Use format `#FF9900`.", ephemeral=True
+                )
+                return
+
+        if self.footer_text.value.strip():
+            branding["footer_text"] = self.footer_text.value.strip()
+
+        if self.modmail_banner.value.strip():
+            branding["modmail_banner_url"] = self.modmail_banner.value.strip()
+
+        cfg = bot.data_manager._configs.setdefault(interaction.guild_id, {})
+        cfg["_branding"] = branding
+        bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
+        await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
+
+        # Apply bot nickname in this guild
+        nick = self.bot_nickname.value.strip() or None
+        if interaction.guild and interaction.guild.me:
+            try:
+                await interaction.guild.me.edit(nick=nick)
+            except Exception:
+                pass
+
+        await interaction.response.send_message(
+            embed=make_embed(
+                "Branding Updated",
+                "> Server branding has been saved. Changes apply immediately to all new embeds.",
+                kind="success",
+                scope=SCOPE_SYSTEM,
+                guild=interaction.guild,
+            ),
+            ephemeral=True,
+        )
+
+
 @tree.command(name="safetypanel", description="Manage anti-nuke immunity settings | owner")
 @app_commands.default_permissions(administrator=True)
 @app_commands.check(check_owner)
@@ -9839,8 +9940,15 @@ async def history_context(interaction: discord.Interaction, user: discord.Member
 @tree.error
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     if isinstance(error, app_commands.CheckFailure):
+        if str(error) == "guild_not_configured":
+            msg = "> This server hasn't been configured yet. Ask an admin to run `/setup`."
+        else:
+            msg = "> You do not have permission to use this command."
         if not interaction.response.is_done():
-            await interaction.response.send_message(embed=make_error_embed("Access Denied", "> You do not have permission to use this command.", scope=SCOPE_SYSTEM, guild=interaction.guild), ephemeral=True)
+            await interaction.response.send_message(
+                embed=make_error_embed("Access Denied", msg, scope=SCOPE_SYSTEM, guild=interaction.guild),
+                ephemeral=True,
+            )
         return
 
     if isinstance(error, app_commands.CommandInvokeError):

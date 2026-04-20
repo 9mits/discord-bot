@@ -59,7 +59,7 @@ PERMISSIONS_MATRIX = {
     "modmail_panel": {"roles": ("role_mod", "role_admin", "role_owner", "role_community_manager"), "allow_admin": True},
     "setup_panel": {"roles": ("role_admin", "role_owner", "role_community_manager"), "allow_admin": True},
     "config_panel": {"roles": ("role_admin", "role_owner", "role_community_manager"), "allow_admin": True},
-    "owner_panel": {"roles": ("role_owner",), "allow_admin": False},
+    "owner_panel": {"roles": ("role_owner", "role_admin"), "allow_admin": True},
 }
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from modules.mbx_legacy import (
     access,
     archive,
+    branding_cmd,
     clone,
     config_cmd,
     directory,
@@ -15,6 +16,7 @@ from modules.mbx_legacy import (
     on_message,
     on_ready,
     publicexecution,
+    requires_setup,
     rules,
     safety_panel,
     setup,
@@ -28,6 +30,7 @@ from modules.mbx_legacy import (
 __all__ = [
     "access",
     "archive",
+    "branding_cmd",
     "clone",
     "config_cmd",
     "directory",
@@ -40,6 +43,7 @@ __all__ = [
     "on_message",
     "on_ready",
     "publicexecution",
+    "requires_setup",
     "rules",
     "safety_panel",
     "setup",
