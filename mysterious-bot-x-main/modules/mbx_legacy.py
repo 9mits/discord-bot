@@ -703,7 +703,13 @@ def normalize_log_embed(embed: discord.Embed, *, guild: Optional[discord.Guild] 
 
     normalized = discord.Embed.from_dict(payload)
     footer = embed.footer
-    if footer and footer.text:
+    if guild is not None:
+        _set_footer_branding(
+            normalized,
+            footer.text if footer and footer.text else _build_footer_text(SCOPE_SYSTEM, guild),
+            guild,
+        )
+    elif footer and footer.text:
         normalized.set_footer(text=footer.text, icon_url=footer.icon_url)
     else:
         brand_embed(normalized, guild=guild)
@@ -935,6 +941,21 @@ def _build_footer_text_with_detail(scope: str, guild: Optional[discord.Guild], d
     return f"{base_text} • {detail_text}" if detail_text else base_text
 
 
+def _get_footer_icon_url(guild: Optional[discord.Guild]) -> Optional[str]:
+    if guild and getattr(guild, "icon", None):
+        return guild.icon.url
+    return None
+
+
+def _set_footer_branding(embed: discord.Embed, text: str, guild: Optional[discord.Guild]) -> discord.Embed:
+    icon_url = _get_footer_icon_url(guild)
+    if icon_url:
+        embed.set_footer(text=text, icon_url=icon_url)
+    else:
+        embed.set_footer(text=text)
+    return embed
+
+
 async def apply_guild_member_branding(
     guild: discord.Guild,
     *,
@@ -1040,10 +1061,7 @@ def make_embed(
     footer_text = _build_footer_text(scope, guild)
     embed = discord.Embed(title=title, description=description, color=color)
     embed.timestamp = discord.utils.utcnow()
-    if guild and guild.icon:
-        embed.set_footer(text=footer_text, icon_url=guild.icon.url)
-    else:
-        embed.set_footer(text=footer_text)
+    _set_footer_branding(embed, footer_text, guild)
     if thumbnail:
         embed.set_thumbnail(url=thumbnail)
     if author_name:
@@ -1059,10 +1077,7 @@ def brand_embed(
 ) -> discord.Embed:
     embed.timestamp = discord.utils.utcnow()
     footer_text = _build_footer_text(scope, guild)
-    if guild and guild.icon:
-        embed.set_footer(text=footer_text, icon_url=guild.icon.url)
-    else:
-        embed.set_footer(text=footer_text)
+    _set_footer_branding(embed, footer_text, guild)
     return embed
 
 
@@ -1909,12 +1924,14 @@ def build_active_punishments_embed(guild: discord.Guild, active_list: List[tuple
         )
 
     if len(active_list) > display_limit:
-        embed.set_footer(
-            text=_build_footer_text_with_detail(
+        _set_footer_branding(
+            embed,
+            _build_footer_text_with_detail(
                 SCOPE_MODERATION,
                 guild,
                 f"Showing {display_limit} of {len(active_list)} active cases",
-            )
+            ),
+            guild,
         )
     return embed
 
@@ -9973,7 +9990,7 @@ async def role_manage(interaction: discord.Interaction, action: str, target: Opt
         
         if role:
             embed = build_role_info_embed(target, rec, role, include_tips=True)
-            embed.set_footer(text=f"Admin Control Panel for {target.display_name}")
+            _set_footer_branding(embed, f"Admin Control Panel for {target.display_name}", interaction.guild)
             view = EditView(target, role)
             await interaction.followup.send(embed=embed, view=view, ephemeral=True)
         else:
@@ -10135,7 +10152,7 @@ class BrandingColorModal(discord.ui.Modal, title="Set Embed Color"):
 
 class BrandingDisplayNameModal(discord.ui.Modal, title="Set Display Name"):
     display_name = discord.ui.TextInput(
-        label="Bot display name in this server (blank = reset)",
+        label="Display name for this server",
         placeholder="ModBot",
         required=False,
         max_length=32,
@@ -10158,7 +10175,7 @@ class BrandingDisplayNameModal(discord.ui.Modal, title="Set Display Name"):
 
 class BrandingAvatarModal(discord.ui.Modal, title="Set Profile Avatar URL"):
     avatar_url = discord.ui.TextInput(
-        label="HTTPS image URL for the bot avatar (blank = reset)",
+        label="HTTPS URL for server avatar",
         placeholder="https://cdn.discordapp.com/...",
         required=False,
         max_length=500,
@@ -10181,7 +10198,7 @@ class BrandingAvatarModal(discord.ui.Modal, title="Set Profile Avatar URL"):
 
 class BrandingBannerModal(discord.ui.Modal, title="Set Profile Banner URL"):
     banner_url = discord.ui.TextInput(
-        label="HTTPS image URL for the bot banner (blank = reset)",
+        label="HTTPS URL for server banner",
         placeholder="https://cdn.discordapp.com/...",
         required=False,
         max_length=500,
@@ -10204,7 +10221,7 @@ class BrandingBannerModal(discord.ui.Modal, title="Set Profile Banner URL"):
 
 class BrandingBioModal(discord.ui.Modal, title="Set Profile Bio"):
     profile_bio = discord.ui.TextInput(
-        label="Bot bio in this server (blank = reset)",
+        label="Bio for this server",
         style=discord.TextStyle.paragraph,
         placeholder="Support bot for this community.",
         required=False,
@@ -10228,7 +10245,7 @@ class BrandingBioModal(discord.ui.Modal, title="Set Profile Bio"):
 
 class BrandingModmailBannerModal(discord.ui.Modal, title="Set Modmail Banner URL"):
     banner_url = discord.ui.TextInput(
-        label="HTTPS image URL for modmail panel banner",
+        label="HTTPS URL for modmail banner",
         placeholder="https://cdn.discordapp.com/...",
         required=False,
         max_length=500,

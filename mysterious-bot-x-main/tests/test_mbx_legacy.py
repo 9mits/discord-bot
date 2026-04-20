@@ -221,6 +221,30 @@ class MbxLegacyBrandingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(footer_text, f"{mbx_legacy.BRAND_NAME} • {mbx_legacy.SCOPE_SYSTEM}")
 
+    def test_normalize_log_embed_rebrands_footer_with_guild_icon(self):
+        embed = discord.Embed(title="Test", description="Body")
+        embed.set_footer(text="Wrong Footer", icon_url="https://cdn.example/old.png")
+        guild = SimpleNamespace(name="Cool Server", icon=SimpleNamespace(url="https://cdn.example/server.png"))
+
+        normalized = mbx_legacy.normalize_log_embed(embed, guild=guild)
+
+        self.assertEqual(normalized.footer.text, "Wrong Footer")
+        self.assertEqual(str(normalized.footer.icon_url), "https://cdn.example/server.png")
+
+    async def test_branding_modal_labels_fit_discord_limit(self):
+        modals = [
+            mbx_legacy.BrandingDisplayNameModal(),
+            mbx_legacy.BrandingAvatarModal(),
+            mbx_legacy.BrandingBannerModal(),
+            mbx_legacy.BrandingBioModal(),
+            mbx_legacy.BrandingModmailBannerModal(),
+        ]
+
+        for modal in modals:
+            for child in modal.children:
+                label = child.to_component_dict()["label"]
+                self.assertLessEqual(len(label), 45, label)
+
     async def test_apply_guild_member_branding_uses_current_member_route_payload(self):
         request = AsyncMock()
         guild = SimpleNamespace(id=123)
