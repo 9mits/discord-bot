@@ -956,6 +956,25 @@ def _set_footer_branding(embed: discord.Embed, text: str, guild: Optional[discor
     return embed
 
 
+def _format_branding_panel_value(
+    value: Optional[str],
+    *,
+    empty: str = "Not set",
+    limit: int = 60,
+) -> str:
+    clean = str(value or "").strip()
+    if not clean:
+        return f"`{empty}`"
+    if len(clean) > limit:
+        clean = f"{clean[:limit]}..."
+    return f"`{clean}`"
+
+
+async def _refresh_branding_panel(interaction: discord.Interaction) -> None:
+    embed = _build_branding_panel_embed(interaction.guild)
+    await interaction.response.edit_message(embed=embed)
+
+
 async def apply_guild_member_branding(
     guild: discord.Guild,
     *,
@@ -10080,18 +10099,11 @@ def _build_branding_panel_embed(guild: discord.Guild) -> discord.Embed:
     member = guild.me
     if member is None and getattr(bot, "user", None) is not None:
         member = guild.get_member(bot.user.id)
-
-    def format_value(value: Optional[str], *, default: str = "Default", limit: int = 60) -> str:
-        clean = str(value or "").strip()
-        if not clean:
-            return f"`{default}`"
-        if len(clean) > limit:
-            clean = f"{clean[:limit]}..."
-        return f"`{clean}`"
-
-    current_display_name = getattr(member, "display_name", None) or getattr(bot.user, "name", None) or "Default"
-    avatar_live = "Custom" if member and getattr(member, "guild_avatar", None) else "Default"
-    banner_live = "Custom" if member and getattr(member, "guild_banner", None) else "Default"
+    current_display_name = getattr(member, "display_name", None) or getattr(bot.user, "name", None) or "Mysterious Bot X"
+    avatar_status = branding.get("avatar_url") or ("Set" if member and getattr(member, "guild_avatar", None) else None)
+    banner_status = branding.get("banner_url") or ("Set" if member and getattr(member, "guild_banner", None) else None)
+    bio_status = branding.get("bio")
+    footer_icon_status = "Server icon" if _get_footer_icon_url(guild) else None
 
     embed = make_embed(
         "Server Branding",
@@ -10108,13 +10120,19 @@ def _build_branding_panel_embed(guild: discord.Guild) -> discord.Embed:
     if member and getattr(member, "guild_banner", None):
         embed.set_image(url=member.guild_banner.url)
 
-    embed.add_field(name="Embed Color", value=format_value(branding.get("embed_color")), inline=True)
-    embed.add_field(name="Display Name", value=format_value(branding.get("display_name") or current_display_name), inline=True)
-    embed.add_field(name="Profile Bio", value=format_value(branding.get("bio")), inline=True)
-    embed.add_field(name="Profile Avatar", value=format_value(branding.get("avatar_url"), default=avatar_live), inline=False)
-    embed.add_field(name="Profile Banner", value=format_value(branding.get("banner_url"), default=banner_live), inline=False)
-    embed.add_field(name="Modmail Banner", value=format_value(branding.get("modmail_banner_url")), inline=False)
-    embed.add_field(name="Footer Preview", value=format_value(_build_footer_text(SCOPE_SYSTEM, guild), default="Default"), inline=False)
+    embed.add_field(name="Embed Color", value=_format_branding_panel_value(branding.get("embed_color")), inline=True)
+    embed.add_field(name="Display Name", value=_format_branding_panel_value(current_display_name), inline=True)
+    embed.add_field(
+        name="Display Name Override",
+        value=_format_branding_panel_value(branding.get("display_name")),
+        inline=True,
+    )
+    embed.add_field(name="Profile Bio", value=_format_branding_panel_value(bio_status), inline=True)
+    embed.add_field(name="Profile Avatar", value=_format_branding_panel_value(avatar_status), inline=True)
+    embed.add_field(name="Profile Banner", value=_format_branding_panel_value(banner_status), inline=True)
+    embed.add_field(name="Modmail Banner", value=_format_branding_panel_value(branding.get("modmail_banner_url")), inline=False)
+    embed.add_field(name="Footer Preview", value=_format_branding_panel_value(_build_footer_text(SCOPE_SYSTEM, guild)), inline=True)
+    embed.add_field(name="Footer Icon", value=_format_branding_panel_value(footer_icon_status), inline=True)
     embed.add_field(
         name="How to edit",
         value=(
@@ -10146,8 +10164,7 @@ class BrandingColorModal(discord.ui.Modal, title="Set Embed Color"):
             return
         color = raw if raw.startswith("#") else f"#{raw}"
         await save_branding_settings(interaction.guild_id, {"embed_color": color})
-        embed = _build_branding_panel_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+        await _refresh_branding_panel(interaction)
 
 
 class BrandingDisplayNameModal(discord.ui.Modal, title="Set Display Name"):
@@ -10169,8 +10186,7 @@ class BrandingDisplayNameModal(discord.ui.Modal, title="Set Display Name"):
             await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
             return
         await save_branding_settings(interaction.guild_id, {"display_name": display_name or None})
-        embed = _build_branding_panel_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+        await _refresh_branding_panel(interaction)
 
 
 class BrandingAvatarModal(discord.ui.Modal, title="Set Profile Avatar URL"):
@@ -10192,8 +10208,7 @@ class BrandingAvatarModal(discord.ui.Modal, title="Set Profile Avatar URL"):
             await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
             return
         await save_branding_settings(interaction.guild_id, {"avatar_url": avatar_url or None})
-        embed = _build_branding_panel_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+        await _refresh_branding_panel(interaction)
 
 
 class BrandingBannerModal(discord.ui.Modal, title="Set Profile Banner URL"):
@@ -10215,8 +10230,7 @@ class BrandingBannerModal(discord.ui.Modal, title="Set Profile Banner URL"):
             await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
             return
         await save_branding_settings(interaction.guild_id, {"banner_url": banner_url or None})
-        embed = _build_branding_panel_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+        await _refresh_branding_panel(interaction)
 
 
 class BrandingBioModal(discord.ui.Modal, title="Set Profile Bio"):
@@ -10239,8 +10253,7 @@ class BrandingBioModal(discord.ui.Modal, title="Set Profile Bio"):
             await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
             return
         await save_branding_settings(interaction.guild_id, {"bio": bio or None})
-        embed = _build_branding_panel_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+        await _refresh_branding_panel(interaction)
 
 
 class BrandingModmailBannerModal(discord.ui.Modal, title="Set Modmail Banner URL"):
@@ -10259,8 +10272,7 @@ class BrandingModmailBannerModal(discord.ui.Modal, title="Set Modmail Banner URL
                 await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
                 return
         await save_branding_settings(interaction.guild_id, {"modmail_banner_url": banner_url or None})
-        embed = _build_branding_panel_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+        await _refresh_branding_panel(interaction)
 
 
 class BrandingPanelView(discord.ui.View):
@@ -10308,8 +10320,7 @@ class BrandingPanelView(discord.ui.View):
         cfg["_branding"] = {}
         bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
         await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
-        embed = _build_branding_panel_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+        await _refresh_branding_panel(interaction)
 
 
 @tree.command(name="branding", description="Customize the bot's look for this server | admin")

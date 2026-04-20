@@ -209,6 +209,10 @@ class MbxLegacyModmailTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MbxLegacyBrandingTests(unittest.IsolatedAsyncioTestCase):
+    def test_format_branding_panel_value_uses_inline_code_for_empty_values(self):
+        self.assertEqual(mbx_legacy._format_branding_panel_value(None), "`Not set`")
+        self.assertEqual(mbx_legacy._format_branding_panel_value(""), "`Not set`")
+
     def test_build_footer_text_uses_guild_name_first(self):
         guild = SimpleNamespace(name="Cool Server")
 
@@ -230,6 +234,31 @@ class MbxLegacyBrandingTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(normalized.footer.text, "Wrong Footer")
         self.assertEqual(str(normalized.footer.icon_url), "https://cdn.example/server.png")
+
+    def test_build_branding_panel_embed_formats_unset_values_consistently(self):
+        guild = SimpleNamespace(
+            id=123,
+            name="Cool Server",
+            icon=SimpleNamespace(url="https://cdn.example/server.png"),
+            me=SimpleNamespace(
+                display_name="Cool Bot",
+                display_avatar=SimpleNamespace(url="https://cdn.example/avatar.png"),
+                guild_banner=None,
+                guild_avatar=None,
+            ),
+            get_member=lambda _user_id: None,
+        )
+        fake_bot = SimpleNamespace(user=SimpleNamespace(name="Cool Bot"))
+
+        with patch.object(mbx_legacy, "bot", fake_bot), patch.object(mbx_legacy, "_get_branding_config", return_value={}):
+            embed = mbx_legacy._build_branding_panel_embed(guild)
+
+        fields = {field.name: field.value for field in embed.fields}
+        self.assertEqual(fields["Profile Bio"], "`Not set`")
+        self.assertEqual(fields["Profile Avatar"], "`Not set`")
+        self.assertEqual(fields["Profile Banner"], "`Not set`")
+        self.assertEqual(fields["Modmail Banner"], "`Not set`")
+        self.assertEqual(fields["Footer Icon"], "`Server icon`")
 
     async def test_branding_modal_labels_fit_discord_limit(self):
         modals = [
