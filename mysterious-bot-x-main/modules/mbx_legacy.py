@@ -857,6 +857,49 @@ async def resolve_member(guild: discord.Guild, user_id: int) -> Optional[discord
         return None
 
 
+def fmt_role(guild: Optional[discord.Guild], role_id: Optional[int]) -> str:
+    """Format a role mention, or 'Not set' if the role doesn't exist in the guild."""
+    if not role_id:
+        return "Not set"
+    if guild is not None:
+        role = guild.get_role(int(role_id))
+        if role is None:
+            return "Not set"
+    return f"<@&{role_id}>"
+
+
+def fmt_channel(guild: Optional[discord.Guild], channel_id: Optional[int]) -> str:
+    """Format a channel mention, or 'Not set' if the channel doesn't exist."""
+    if not channel_id:
+        return "Not set"
+    if guild is not None:
+        ch = guild.get_channel(int(channel_id))
+        if ch is None:
+            return "Not set"
+    return f"<#{channel_id}>"
+
+
+def _build_footer_text(scope: str, guild: Optional[discord.Guild]) -> str:
+    """Build footer text with correct guild context and optional branding suffix."""
+    parts = [BRAND_NAME, scope]
+    if guild is not None:
+        # Append the current guild name so the footer always reflects the right server
+        parts.append(guild.name)
+    # Append custom branding footer tag if set
+    if guild is not None and getattr(bot, "data_manager", None) is not None:
+        try:
+            custom = str(
+                bot.data_manager._configs.get(guild.id, {})
+                .get("_branding", {})
+                .get("footer_text", "")
+            ).strip()
+            if custom:
+                parts.append(custom)
+        except Exception:
+            pass
+    return " • ".join(parts)
+
+
 def make_embed(
     title: str,
     description: Optional[str] = None,
@@ -869,21 +912,21 @@ def make_embed(
     author_icon: Optional[str] = None,
 ) -> discord.Embed:
     color = EMBED_PALETTE.get(kind, EMBED_PALETTE["neutral"])
-    footer_text = f"{BRAND_NAME} • {scope}"
 
-    # Per-guild branding — reads _configs directly to bypass the property shim
+    # Per-guild custom embed color
     if guild is not None and getattr(bot, "data_manager", None) is not None:
         try:
-            branding = bot.data_manager._configs.get(guild.id, {}).get("_branding", {})
-            hex_color = branding.get("embed_color")
+            hex_color = (
+                bot.data_manager._configs.get(guild.id, {})
+                .get("_branding", {})
+                .get("embed_color")
+            )
             if hex_color:
                 color = discord.Color(int(str(hex_color).lstrip("#"), 16))
-            custom_footer = str(branding.get("footer_text", "")).strip()
-            if custom_footer:
-                footer_text = f"{BRAND_NAME} • {scope} • {custom_footer}"
         except Exception:
             pass
 
+    footer_text = _build_footer_text(scope, guild)
     embed = discord.Embed(title=title, description=description, color=color)
     embed.timestamp = discord.utils.utcnow()
     if guild and guild.icon:
@@ -904,15 +947,7 @@ def brand_embed(
     scope: str = SCOPE_SYSTEM,
 ) -> discord.Embed:
     embed.timestamp = discord.utils.utcnow()
-    footer_text = f"{BRAND_NAME} • {scope}"
-    if guild is not None and getattr(bot, "data_manager", None) is not None:
-        try:
-            branding = bot.data_manager._configs.get(guild.id, {}).get("_branding", {})
-            custom_footer = str(branding.get("footer_text", "")).strip()
-            if custom_footer:
-                footer_text = f"{BRAND_NAME} • {scope} • {custom_footer}"
-        except Exception:
-            pass
+    footer_text = _build_footer_text(scope, guild)
     if guild and guild.icon:
         embed.set_footer(text=footer_text, icon_url=guild.icon.url)
     else:
@@ -1873,11 +1908,11 @@ def build_setup_dashboard_embed(guild: discord.Guild) -> discord.Embed:
     )
 
     # --- Roles ---
-    embed.add_field(name="Owner", value=f"<@&{config.get('role_owner', DEFAULT_ROLE_OWNER)}>", inline=True)
-    embed.add_field(name="Admin", value=f"<@&{config.get('role_admin', DEFAULT_ROLE_ADMIN)}>", inline=True)
-    embed.add_field(name="Moderator", value=f"<@&{config.get('role_mod', DEFAULT_ROLE_MOD)}>", inline=True)
-    embed.add_field(name="Anchor Role", value=f"<@&{config.get('role_anchor', DEFAULT_ANCHOR_ROLE_ID)}>", inline=True)
-    embed.add_field(name="Community Manager", value=f"<@&{config.get('role_community_manager', DEFAULT_ROLE_COMMUNITY_MANAGER)}>", inline=True)
+    embed.add_field(name="Owner", value=fmt_role(guild, config.get("role_owner")), inline=True)
+    embed.add_field(name="Admin", value=fmt_role(guild, config.get("role_admin")), inline=True)
+    embed.add_field(name="Moderator", value=fmt_role(guild, config.get("role_mod")), inline=True)
+    embed.add_field(name="Anchor Role", value=fmt_role(guild, config.get("role_anchor")), inline=True)
+    embed.add_field(name="Community Manager", value=fmt_role(guild, config.get("role_community_manager")), inline=True)
     embed.add_field(name="\u200b", value="\u200b", inline=True)  # spacer
 
     # --- Log Channels ---
@@ -1886,10 +1921,10 @@ def build_setup_dashboard_embed(guild: discord.Guild) -> discord.Embed:
     embed.add_field(
         name="Log Channels",
         value=join_lines([
-            "General: " + (f"<#{general_log_channel_id}>" if general_log_channel_id else "Not set"),
-            "Punishments: " + (f"<#{configured_punishment_log_channel_id}>" if configured_punishment_log_channel_id else "Falls back to general"),
-            "AutoMod: " + (f"<#{_automod_log}>" if _automod_log else "Not set"),
-            "Reports: " + (f"<#{_automod_report}>" if _automod_report else "Not set"),
+            "General: " + fmt_channel(guild, general_log_channel_id),
+            "Punishments: " + (fmt_channel(guild, configured_punishment_log_channel_id) if configured_punishment_log_channel_id else "Falls back to general"),
+            "AutoMod: " + fmt_channel(guild, _automod_log),
+            "Reports: " + fmt_channel(guild, _automod_report),
         ]),
         inline=True,
     )
@@ -1901,9 +1936,9 @@ def build_setup_dashboard_embed(guild: discord.Guild) -> discord.Embed:
     embed.add_field(
         name="Support Channels",
         value=join_lines([
-            "Modmail Inbox: " + (f"<#{_modmail_inbox}>" if _modmail_inbox else "Not set"),
-            "Modmail Panel: " + (f"<#{_modmail_panel}>" if _modmail_panel else "Not set"),
-            "Appeals: " + (f"<#{_appeal}>" if _appeal else "Not set"),
+            "Modmail Inbox: " + fmt_channel(guild, _modmail_inbox),
+            "Modmail Panel: " + fmt_channel(guild, _modmail_panel),
+            "Appeals: " + fmt_channel(guild, _appeal),
         ]),
         inline=True,
     )
@@ -9378,12 +9413,13 @@ async def internals(interaction: discord.Interaction):
     embed.add_field(name="Dangerous Permissions (Anti-Nuke Triggers)", value=">>> " + "\n".join(perms_list), inline=False)
     
     # Current Config
+    g = interaction.guild
     roles_info = (
-        f"**Owner Role:** <@&{conf.get('role_owner', DEFAULT_ROLE_OWNER)}>\n"
-        f"**Admin Role:** <@&{conf.get('role_admin', DEFAULT_ROLE_ADMIN)}>\n"
-        f"**Mod Role:** <@&{conf.get('role_mod', DEFAULT_ROLE_MOD)}>\n"
-        f"**Community Manager:** <@&{conf.get('role_community_manager', DEFAULT_ROLE_COMMUNITY_MANAGER)}>\n"
-        f"**Anchor Role:** <@&{conf.get('role_anchor', DEFAULT_ANCHOR_ROLE_ID)}>"
+        f"**Owner Role:** {fmt_role(g, conf.get('role_owner'))}\n"
+        f"**Admin Role:** {fmt_role(g, conf.get('role_admin'))}\n"
+        f"**Mod Role:** {fmt_role(g, conf.get('role_mod'))}\n"
+        f"**Community Manager:** {fmt_role(g, conf.get('role_community_manager'))}\n"
+        f"**Anchor Role:** {fmt_role(g, conf.get('role_anchor'))}"
     )
     embed.add_field(name="Current Role Configuration", value=f">>> {roles_info}", inline=False)
     
@@ -9728,82 +9764,165 @@ async def automod_cmd(interaction: discord.Interaction):
         return
     await interaction.response.send_message(embed=build_automod_dashboard_embed(interaction.guild), view=AutoModDashboardView(), ephemeral=True)
 
-@tree.command(name="branding", description="Customize the bot's look for this server | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
-async def branding_cmd(interaction: discord.Interaction):
-    await interaction.response.send_modal(BrandingModal())
+def _build_branding_panel_embed(guild: discord.Guild) -> discord.Embed:
+    branding = bot.data_manager._configs.get(guild.id, {}).get("_branding", {})
+    color_val = branding.get("embed_color") or "Default"
+    footer_val = branding.get("footer_text") or "None"
+    banner_val = branding.get("modmail_banner_url") or "Default"
+    nick = guild.me.nick if guild.me else None
+    nick_val = nick or "Default"
+
+    embed = make_embed(
+        "Server Branding",
+        "> Customize how the bot looks in your server. Changes apply to all new embeds immediately.",
+        kind="neutral",
+        scope=SCOPE_SYSTEM,
+        guild=guild,
+    )
+    embed.add_field(name="Embed Color", value=f"`{color_val}`", inline=True)
+    embed.add_field(name="Footer Text", value=f"`{footer_val}`", inline=True)
+    embed.add_field(name="Bot Nickname", value=f"`{nick_val}`", inline=True)
+    embed.add_field(name="Modmail Banner", value=f"`{banner_val[:60]}...`" if len(banner_val) > 60 else f"`{banner_val}`", inline=False)
+    embed.add_field(
+        name="How to edit",
+        value=(
+            "> Use the buttons below to edit each setting.\n"
+            "> **Reset** clears all custom branding back to defaults."
+        ),
+        inline=False,
+    )
+    return embed
 
 
-class BrandingModal(discord.ui.Modal, title="Server Branding"):
+class BrandingColorModal(discord.ui.Modal, title="Set Embed Color"):
     embed_color = discord.ui.TextInput(
-        label="Embed Color (hex, e.g. #FF9900)",
+        label="Hex Color (e.g. #FF9900)",
         placeholder="#FF9900",
-        required=False,
+        required=True,
         max_length=9,
     )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.embed_color.value.strip()
+        try:
+            int(raw.lstrip("#"), 16)
+        except ValueError:
+            await interaction.response.send_message(
+                embed=make_error_embed("Invalid Color", "> Use hex format like `#FF9900`.", scope=SCOPE_SYSTEM, guild=interaction.guild),
+                ephemeral=True,
+            )
+            return
+        color = raw if raw.startswith("#") else f"#{raw}"
+        cfg = bot.data_manager._configs.setdefault(interaction.guild_id, {})
+        cfg.setdefault("_branding", {})["embed_color"] = color
+        bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
+        await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
+        embed = _build_branding_panel_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+
+
+class BrandingFooterModal(discord.ui.Modal, title="Set Footer Text"):
     footer_text = discord.ui.TextInput(
-        label="Footer Text (appended to all embeds)",
+        label="Footer text appended to all embeds",
         placeholder="My Community",
         required=False,
         max_length=64,
     )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg = bot.data_manager._configs.setdefault(interaction.guild_id, {})
+        val = self.footer_text.value.strip()
+        if val:
+            cfg.setdefault("_branding", {})["footer_text"] = val
+        else:
+            cfg.setdefault("_branding", {}).pop("footer_text", None)
+        bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
+        await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
+        embed = _build_branding_panel_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+
+
+class BrandingNicknameModal(discord.ui.Modal, title="Set Bot Nickname"):
     bot_nickname = discord.ui.TextInput(
-        label="Bot Nickname in this server",
+        label="Bot nickname in this server (blank = reset)",
         placeholder="ModBot",
         required=False,
         max_length=32,
     )
-    modmail_banner = discord.ui.TextInput(
-        label="Modmail Panel Banner URL",
-        placeholder="https://...",
-        required=False,
-        max_length=500,
-    )
 
     async def on_submit(self, interaction: discord.Interaction):
-        branding: dict = {}
-
-        raw_color = self.embed_color.value.strip()
-        if raw_color:
-            try:
-                int(raw_color.lstrip("#"), 16)
-                branding["embed_color"] = raw_color if raw_color.startswith("#") else f"#{raw_color}"
-            except ValueError:
-                await interaction.response.send_message(
-                    "**Invalid hex color.** Use format `#FF9900`.", ephemeral=True
-                )
-                return
-
-        if self.footer_text.value.strip():
-            branding["footer_text"] = self.footer_text.value.strip()
-
-        if self.modmail_banner.value.strip():
-            branding["modmail_banner_url"] = self.modmail_banner.value.strip()
-
-        cfg = bot.data_manager._configs.setdefault(interaction.guild_id, {})
-        cfg["_branding"] = branding
-        bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
-        await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
-
-        # Apply bot nickname in this guild
         nick = self.bot_nickname.value.strip() or None
         if interaction.guild and interaction.guild.me:
             try:
                 await interaction.guild.me.edit(nick=nick)
             except Exception:
                 pass
+        embed = _build_branding_panel_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
 
-        await interaction.response.send_message(
-            embed=make_embed(
-                "Branding Updated",
-                "> Server branding has been saved. Changes apply immediately to all new embeds.",
-                kind="success",
-                scope=SCOPE_SYSTEM,
-                guild=interaction.guild,
-            ),
-            ephemeral=True,
-        )
+
+class BrandingBannerModal(discord.ui.Modal, title="Set Modmail Banner URL"):
+    banner_url = discord.ui.TextInput(
+        label="Image URL for modmail panel banner",
+        placeholder="https://cdn.discordapp.com/...",
+        required=False,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        cfg = bot.data_manager._configs.setdefault(interaction.guild_id, {})
+        val = self.banner_url.value.strip()
+        if val:
+            cfg.setdefault("_branding", {})["modmail_banner_url"] = val
+        else:
+            cfg.setdefault("_branding", {}).pop("modmail_banner_url", None)
+        bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
+        await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
+        embed = _build_branding_panel_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+
+
+class BrandingPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Embed Color", style=discord.ButtonStyle.primary, emoji="🎨", row=0)
+    async def set_color(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BrandingColorModal())
+
+    @discord.ui.button(label="Footer Text", style=discord.ButtonStyle.primary, emoji="✏️", row=0)
+    async def set_footer(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BrandingFooterModal())
+
+    @discord.ui.button(label="Bot Nickname", style=discord.ButtonStyle.primary, emoji="🏷️", row=0)
+    async def set_nickname(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BrandingNicknameModal())
+
+    @discord.ui.button(label="Modmail Banner", style=discord.ButtonStyle.secondary, emoji="🖼️", row=1)
+    async def set_banner(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BrandingBannerModal())
+
+    @discord.ui.button(label="Reset All", style=discord.ButtonStyle.danger, emoji="🗑️", row=1)
+    async def reset_branding(self, interaction: discord.Interaction, button: discord.ui.Button):
+        cfg = bot.data_manager._configs.setdefault(interaction.guild_id, {})
+        cfg["_branding"] = {}
+        bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
+        await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
+        if interaction.guild and interaction.guild.me:
+            try:
+                await interaction.guild.me.edit(nick=None)
+            except Exception:
+                pass
+        embed = _build_branding_panel_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+
+
+@tree.command(name="branding", description="Customize the bot's look for this server | admin")
+@app_commands.default_permissions(administrator=True)
+@app_commands.check(check_admin)
+async def branding_cmd(interaction: discord.Interaction):
+    embed = _build_branding_panel_embed(interaction.guild)
+    await interaction.response.send_message(embed=embed, view=BrandingPanelView(), ephemeral=True)
 
 
 @tree.command(name="safetypanel", description="Manage anti-nuke immunity settings | owner")
@@ -10170,24 +10289,30 @@ async def on_raw_reaction_add(payload):
 
 @bot.command()
 async def sync(ctx):
-    if bot.data_manager and ctx.guild:
+    """Admin override: force re-sync slash commands. Normally not needed — bot auto-syncs on startup."""
+    if not ctx.guild:
+        await ctx.send("This command can only be used in a server.")
+        return
+    if bot.data_manager:
         bot.data_manager._current_guild_id = ctx.guild.id
         await bot.data_manager.ensure_guild_loaded(ctx.guild.id)
-    # Check for Owner Role, Server Owner, or Administrator
-    owner_role = bot.data_manager.config.get("role_owner", DEFAULT_ROLE_OWNER)
+
+    # Permission check
+    owner_role = bot.data_manager.config.get("role_owner") if bot.data_manager else None
     is_owner = ctx.author.id == ctx.guild.owner_id
-    has_role = any(r.id == owner_role for r in ctx.author.roles)
+    has_role = owner_role and any(r.id == owner_role for r in ctx.author.roles)
     is_admin = ctx.author.guild_permissions.administrator
-    
+
     if not (is_owner or has_role or is_admin):
         await ctx.send("Access Denied: You need the Owner role, Server Owner status, or Administrator permission.")
         return
-    
-    guild = ctx.guild
-    await ctx.send(f"Syncing commands to **{guild.name}**...")
-    bot.tree.copy_global_to(guild=guild)
-    cmds = await bot.tree.sync(guild=guild)
-    await ctx.send(f"Synced {len(cmds)} commands! Check console for list.")
+
+    msg = await ctx.send("Syncing global slash commands...")
+    try:
+        cmds = await bot.tree.sync()
+        await msg.edit(content=f"Synced **{len(cmds)}** global slash command(s). All servers will see updates within ~1 hour.")
+    except Exception as exc:
+        await msg.edit(content=f"Sync failed: {exc}")
     logger.info(f"Synced commands: {[c.name for c in cmds]}")
 
 @tree.command(name="status", description="View bot latency and uptime | mod")
@@ -11012,8 +11137,6 @@ async def on_message(message: discord.Message):
 
     await bot.process_commands(message)
 
-@bot.event
 async def on_ready():
-    bot.start_time = time.time()
-    logger.info(f"[READY] Logged in as {bot.user} (ID: {bot.user.id}). System operational.")
+    pass  # Handled by MGXBot.on_ready in mbx_bot.py
 

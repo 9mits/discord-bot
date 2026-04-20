@@ -88,6 +88,9 @@ class MGXBot(commands.Bot):
         self.add_listener(self._on_guild_join, "on_guild_join")
         self.add_listener(self._on_guild_remove, "on_guild_remove")
 
+        # Auto-sync slash commands globally on startup (runs after ready)
+        self._sync_done = False
+
         self.check_tempbans.start()
         self.background_save_task.start()
         self.status_task.start()
@@ -97,6 +100,22 @@ class MGXBot(commands.Bot):
     # ------------------------------------------------------------------ #
     #  Guild join / leave                                                  #
     # ------------------------------------------------------------------ #
+
+    async def _auto_sync_global(self) -> None:
+        """Sync slash commands globally once after ready. Skips if already done."""
+        if self._sync_done:
+            return
+        self._sync_done = True
+        try:
+            synced = await self.tree.sync()
+            logger.info("Auto-synced %d global slash commands on startup.", len(synced))
+        except Exception as exc:
+            logger.error("Global auto-sync failed: %s", exc)
+
+    async def on_ready(self):
+        logger.info("[READY] Logged in as %s (ID: %s). System operational.", self.user, self.user.id)
+        self.start_time = time.time()
+        await self._auto_sync_global()
 
     async def _on_guild_join(self, guild: discord.Guild) -> None:
         if not self.data_manager:
@@ -126,10 +145,13 @@ class MGXBot(commands.Bot):
         await self.data_manager.provision_guild(guild.id)
         logger.info("Joined and provisioned guild %s (%s)", guild.name, guild.id)
 
+        # Commands are already global — no per-guild sync needed.
+        # Global sync was done on startup; new guilds automatically receive global commands.
+
         try:
             await guild.owner.send(
                 f"Thanks for adding **{self.user.name}** to **{guild.name}**!\n"
-                f"Run `/setup` to configure the bot for your server."
+                f"Use `/setup` to configure the bot for your server."
             )
         except Exception:
             pass
