@@ -56,6 +56,7 @@ class MGXBot(commands.Bot):
         self.dm_modmail_prompt_cooldowns: Dict[int, float] = {}
         self.native_automod_event_cache: Dict[Tuple[int, int, int, str, str], float] = {}
         self.abuse_system = None
+        self._guild_command_cleanup_done = False
 
     async def setup_hook(self):
         from modules.mbx_data import AntiAbuseSystem
@@ -112,10 +113,67 @@ class MGXBot(commands.Bot):
         except Exception as exc:
             logger.error("Global auto-sync failed: %s", exc)
 
+    async def _cleanup_stale_guild_commands(self) -> None:
+        """Remove stale guild-only commands so only intended global/dev commands remain."""
+        if self._guild_command_cleanup_done:
+            return
+        self._guild_command_cleanup_done = True
+
+        for guild in self.guilds:
+            try:
+                remote_commands = await self.tree.fetch_commands(guild=guild)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to inspect guild-scoped commands for %s (%s): %s",
+                    guild.name,
+                    guild.id,
+                    exc,
+                )
+                continue
+
+            if guild.id == DEV_GUILD_ID:
+                try:
+                    synced = await self.tree.sync(guild=guild)
+                    logger.info(
+                        "Synced %d guild-scoped command(s) for dev guild %s (%s).",
+                        len(synced),
+                        guild.name,
+                        guild.id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to sync guild-scoped commands for dev guild %s (%s): %s",
+                        guild.name,
+                        guild.id,
+                        exc,
+                    )
+                continue
+
+            if not remote_commands:
+                continue
+
+            try:
+                self.tree.clear_commands(guild=guild)
+                await self.tree.sync(guild=guild)
+                logger.info(
+                    "Cleared %d stale guild-scoped command(s) from %s (%s).",
+                    len(remote_commands),
+                    guild.name,
+                    guild.id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to clear stale guild-scoped commands for %s (%s): %s",
+                    guild.name,
+                    guild.id,
+                    exc,
+                )
+
     async def on_ready(self):
         logger.info("[READY] Logged in as %s (ID: %s). System operational.", self.user, self.user.id)
         self.start_time = time.time()
         await self._auto_sync_global()
+        await self._cleanup_stale_guild_commands()
 
     async def _on_guild_join(self, guild: discord.Guild) -> None:
         if not self.data_manager:
