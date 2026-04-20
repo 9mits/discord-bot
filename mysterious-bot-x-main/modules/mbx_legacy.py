@@ -10170,6 +10170,9 @@ async def on_raw_reaction_add(payload):
 
 @bot.command()
 async def sync(ctx):
+    if bot.data_manager and ctx.guild:
+        bot.data_manager._current_guild_id = ctx.guild.id
+        await bot.data_manager.ensure_guild_loaded(ctx.guild.id)
     # Check for Owner Role, Server Owner, or Administrator
     owner_role = bot.data_manager.config.get("role_owner", DEFAULT_ROLE_OWNER)
     is_owner = ctx.author.id == ctx.guild.owner_id
