@@ -1,3 +1,4 @@
+import base64
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -21,6 +22,7 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
+from discord.http import Route
 from modules.mbx_constants import (
     BRAND_NAME,
     COOLDOWN_SECONDS,
@@ -213,9 +215,12 @@ DANGEROUS_PERMISSIONS = {
 }
 
 ROLE_ICON_MAX_BYTES = 256000
+PROFILE_BRANDING_MAX_BYTES = 8 * 1024 * 1024
+MAX_GUILD_MEMBER_BIO_LENGTH = 190
 MODMAIL_RELAY_MAX_FILES = 5
 MODMAIL_RELAY_MAX_FILE_BYTES = 8 * 1024 * 1024
 MODMAIL_RELAY_MAX_TOTAL_BYTES = 20 * 1024 * 1024
+BRANDING_UNSET = object()
 
 def has_dangerous_perm(perms: discord.Permissions) -> bool:
     for p in DANGEROUS_PERMISSIONS:
@@ -317,17 +322,25 @@ async def validate_image_fetch_url(url: str) -> Tuple[Optional[str], Optional[st
     return candidate, None
 
 
-async def fetch_image_bytes(
+def _format_image_size_limit(max_bytes: int) -> str:
+    if max_bytes % (1024 * 1024) == 0:
+        return f"{max_bytes // (1024 * 1024)}MB"
+    if max_bytes % 1000 == 0:
+        return f"{max_bytes // 1000}KB"
+    return f"{max_bytes} bytes"
+
+
+async def fetch_image_asset(
     url: str,
     timeout: int = 10,
     max_bytes: int = ROLE_ICON_MAX_BYTES,
-) -> Tuple[Optional[bytes], Optional[str]]:
+) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
     if not bot.session:
-        return None, "Image download is unavailable right now."
+        return None, None, "Image download is unavailable right now."
 
     validated_url, error = await validate_image_fetch_url(url)
     if error:
-        return None, error
+        return None, None, error
 
     try:
         request_timeout = aiohttp.ClientTimeout(total=timeout)
@@ -338,19 +351,19 @@ async def fetch_image_bytes(
             headers={"Accept": "image/*"},
         ) as resp:
             if 300 <= resp.status < 400:
-                return None, "Image URLs cannot redirect."
+                return None, None, "Image URLs cannot redirect."
             if resp.status != 200:
-                return None, "Failed to download image. Check the URL."
+                return None, None, "Failed to download image. Check the URL."
 
             content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
             if not content_type.startswith("image/"):
-                return None, "URL did not return an image."
+                return None, None, "URL did not return an image."
 
             content_length = resp.headers.get("Content-Length")
             if content_length:
                 try:
                     if int(content_length) > max_bytes:
-                        return None, "Image too big! Max size is 256KB."
+                        return None, None, f"Image too big! Max size is {_format_image_size_limit(max_bytes)}."
                 except ValueError:
                     pass
 
@@ -358,14 +371,39 @@ async def fetch_image_bytes(
             async for chunk in resp.content.iter_chunked(16384):
                 payload.extend(chunk)
                 if len(payload) > max_bytes:
-                    return None, "Image too big! Max size is 256KB."
-            return bytes(payload), None
+                    return None, None, f"Image too big! Max size is {_format_image_size_limit(max_bytes)}."
+            return bytes(payload), content_type, None
     except asyncio.TimeoutError:
-        return None, "Image download timed out."
+        return None, None, "Image download timed out."
     except aiohttp.ClientError:
-        return None, "Failed to download image. Check the URL."
+        return None, None, "Failed to download image. Check the URL."
     except Exception:
-        return None, "Failed to download image. Check the URL."
+        return None, None, "Failed to download image. Check the URL."
+
+
+async def fetch_image_bytes(
+    url: str,
+    timeout: int = 10,
+    max_bytes: int = ROLE_ICON_MAX_BYTES,
+) -> Tuple[Optional[bytes], Optional[str]]:
+    payload, _content_type, error = await fetch_image_asset(url, timeout=timeout, max_bytes=max_bytes)
+    return payload, error
+
+
+def _make_image_data_uri(payload: bytes, content_type: str) -> str:
+    encoded = base64.b64encode(payload).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+async def fetch_image_data_uri(
+    url: str,
+    timeout: int = 10,
+    max_bytes: int = PROFILE_BRANDING_MAX_BYTES,
+) -> Tuple[Optional[str], Optional[str]]:
+    payload, content_type, error = await fetch_image_asset(url, timeout=timeout, max_bytes=max_bytes)
+    if error or payload is None or content_type is None:
+        return None, error or "Failed to download image. Check the URL."
+    return _make_image_data_uri(payload, content_type), None
 
 
 async def prepare_modmail_relay_attachments(attachments) -> Tuple[List[discord.File], Optional[str]]:
@@ -879,25 +917,98 @@ def fmt_channel(guild: Optional[discord.Guild], channel_id: Optional[int]) -> st
     return f"<#{channel_id}>"
 
 
+def _get_branding_config(guild_id: int) -> Dict[str, Any]:
+    if getattr(bot, "data_manager", None) is None:
+        return {}
+    return bot.data_manager._configs.get(guild_id, {}).get("_branding", {})
+
+
 def _build_footer_text(scope: str, guild: Optional[discord.Guild]) -> str:
-    """Build footer text with correct guild context and optional branding suffix."""
-    parts = [BRAND_NAME, scope]
-    if guild is not None:
-        # Append the current guild name so the footer always reflects the right server
-        parts.append(guild.name)
-    # Append custom branding footer tag if set
-    if guild is not None and getattr(bot, "data_manager", None) is not None:
-        try:
-            custom = str(
-                bot.data_manager._configs.get(guild.id, {})
-                .get("_branding", {})
-                .get("footer_text", "")
-            ).strip()
-            if custom:
-                parts.append(custom)
-        except Exception:
-            pass
+    """Build footer text with the current guild name first, then the scope."""
+    parts = [guild.name if guild is not None else BRAND_NAME, scope]
     return " • ".join(parts)
+
+
+def _build_footer_text_with_detail(scope: str, guild: Optional[discord.Guild], detail: Optional[str]) -> str:
+    base_text = _build_footer_text(scope, guild)
+    detail_text = str(detail or "").strip()
+    return f"{base_text} • {detail_text}" if detail_text else base_text
+
+
+async def apply_guild_member_branding(
+    guild: discord.Guild,
+    *,
+    display_name: Any = BRANDING_UNSET,
+    avatar_url: Any = BRANDING_UNSET,
+    banner_url: Any = BRANDING_UNSET,
+    bio: Any = BRANDING_UNSET,
+    reason: Optional[str] = None,
+) -> Optional[str]:
+    if guild is None:
+        return "This command can only be used in a server."
+
+    payload: Dict[str, Any] = {}
+
+    if display_name is not BRANDING_UNSET:
+        payload["nick"] = str(display_name or "").strip() or None
+
+    if avatar_url is not BRANDING_UNSET:
+        avatar_value = str(avatar_url or "").strip()
+        if avatar_value:
+            data_uri, error = await fetch_image_data_uri(avatar_value)
+            if error:
+                return f"Avatar update failed: {error}"
+            payload["avatar"] = data_uri
+        else:
+            payload["avatar"] = None
+
+    if banner_url is not BRANDING_UNSET:
+        banner_value = str(banner_url or "").strip()
+        if banner_value:
+            data_uri, error = await fetch_image_data_uri(banner_value)
+            if error:
+                return f"Banner update failed: {error}"
+            payload["banner"] = data_uri
+        else:
+            payload["banner"] = None
+
+    if bio is not BRANDING_UNSET:
+        payload["bio"] = str(bio or "").strip() or None
+
+    if not payload:
+        return None
+
+    try:
+        await bot.http.request(
+            Route("PATCH", "/guilds/{guild_id}/members/@me", guild_id=guild.id),
+            json=payload,
+            reason=reason,
+        )
+    except discord.Forbidden:
+        return "Discord rejected the branding update. Check the bot's permissions and current member profile support."
+    except discord.HTTPException as exc:
+        detail = getattr(exc, "text", None) or str(exc)
+        return f"Discord rejected the branding update: {truncate_text(detail, 200)}"
+
+    return None
+
+
+async def save_branding_settings(guild_id: int, updates: Dict[str, Optional[str]]) -> None:
+    cfg = bot.data_manager._configs.setdefault(guild_id, {})
+    branding = cfg.setdefault("_branding", {})
+    for key, value in updates.items():
+        if value is None or value == "":
+            branding.pop(key, None)
+        else:
+            branding[key] = value
+    if not branding:
+        cfg["_branding"] = {}
+    bot.data_manager._mark_dirty(guild_id, "guild_configs")
+    await bot.data_manager.save_guild(guild_id, {"guild_configs"})
+
+
+def build_branding_error_embed(guild: Optional[discord.Guild], detail: str) -> discord.Embed:
+    return make_error_embed("Branding Update Failed", f"> {detail}", scope=SCOPE_SYSTEM, guild=guild)
 
 
 def make_embed(
@@ -1071,6 +1182,8 @@ async def send_modmail_panel_message(
 ):
     is_dm_panel = in_dm or isinstance(destination, (discord.User, discord.Member, discord.DMChannel))
     embed = build_modmail_panel_embed(guild, in_dm=is_dm_panel)
+    branding = _get_branding_config(guild.id)
+    panel_banner_url = branding.get("modmail_banner_url") or MODMAIL_PANEL_BANNER_URL
     if intro:
         note_value = str(intro).strip()
         if note_value and not note_value.lstrip().startswith((">", "-", "*")):
@@ -1078,13 +1191,13 @@ async def send_modmail_panel_message(
         if note_value:
             embed.add_field(name="Quick Note", value=note_value, inline=False)
 
-    img_data, _ = await fetch_image_bytes(MODMAIL_PANEL_BANNER_URL)
+    img_data, _ = await fetch_image_bytes(panel_banner_url, max_bytes=PROFILE_BRANDING_MAX_BYTES)
     if img_data:
         embed.set_image(url="attachment://banner.png")
         file = discord.File(io.BytesIO(img_data), filename="banner.png")
         return await destination.send(embed=embed, file=file, view=ModmailPanelView())
 
-    embed.set_image(url=MODMAIL_PANEL_BANNER_URL)
+    embed.set_image(url=panel_banner_url)
     return await destination.send(embed=embed, view=ModmailPanelView())
 
 
@@ -1796,7 +1909,13 @@ def build_active_punishments_embed(guild: discord.Guild, active_list: List[tuple
         )
 
     if len(active_list) > display_limit:
-        embed.set_footer(text=f"{BRAND_NAME} • {SCOPE_MODERATION} • Showing {display_limit} of {len(active_list)} active cases")
+        embed.set_footer(
+            text=_build_footer_text_with_detail(
+                SCOPE_MODERATION,
+                guild,
+                f"Showing {display_limit} of {len(active_list)} active cases",
+            )
+        )
     return embed
 
 
@@ -2679,7 +2798,7 @@ def build_feature_flags_embed(guild: discord.Guild) -> discord.Embed:
         guild=guild,
     )
     for key, value in sorted(flags.items()):
-        status = "✅ On" if value else "⬜ Off"
+        status = "On" if value else "Off"
         embed.add_field(name=get_feature_flag_name(key), value=status, inline=True)
     return embed
 
@@ -4247,6 +4366,201 @@ class ConfirmDelete(discord.ui.View):
         await interaction.response.edit_message(content="Deletion canceled.", embed=None, view=None)
         self.stop()
 
+
+def get_public_execution_action_label(punishment_type: str) -> str:
+    mapping = {
+        "ban": "Ban",
+        "kick": "Kick",
+        "timeout": "Timeout",
+        "warn": "Warn",
+        "softban": "Softban",
+    }
+    return mapping.get(punishment_type, "Punish")
+
+
+def build_public_execution_embed(
+    guild: discord.Guild,
+    *,
+    target_id: int,
+    target_avatar_url: Optional[str],
+    punishment_type: str,
+    reason: str,
+    threshold: int,
+    minutes: int,
+    approvals: int = 0,
+) -> discord.Embed:
+    action_label = get_public_execution_action_label(punishment_type)
+    embed = make_embed(
+        "Public Execution Started",
+        (
+            f"Use the button below to approve **{action_label}** for <@{target_id}>.\n\n"
+            f"The action will run once **{threshold}** approval(s) are recorded."
+        ),
+        kind="danger",
+        scope=SCOPE_MODERATION,
+        guild=guild,
+        thumbnail=target_avatar_url,
+    )
+    embed.add_field(name="Reason", value=format_reason_value(reason, limit=200), inline=False)
+    if minutes > 0:
+        embed.add_field(name="Duration", value=format_duration(minutes), inline=True)
+    embed.add_field(name="Approvals", value=f"{approvals}/{threshold}", inline=True)
+    return embed
+
+
+async def execute_public_execution_vote(
+    channel: discord.abc.Messageable,
+    guild: discord.Guild,
+    data: Dict[str, Any],
+) -> None:
+    try:
+        target = await guild.fetch_member(data["target_id"])
+    except discord.NotFound:
+        try:
+            target = await bot.fetch_user(data["target_id"])
+        except Exception:
+            target = None
+
+    if target is None:
+        return
+
+    target_member = target if isinstance(target, discord.Member) else await resolve_member(guild, data["target_id"])
+
+    try:
+        moderator = await guild.fetch_member(data["moderator_id"])
+    except Exception:
+        moderator = None
+
+    try:
+        p_type = data["type"]
+        minutes = data["duration"]
+        action_verb = "Banned" if p_type == "ban" else ("Kicked" if p_type == "kick" else "Timed Out")
+
+        dm_embed = make_embed(
+            "Public Execution Result",
+            f"> You have been **{action_verb}** in **{guild.name}** through a public execution vote.",
+            kind="danger",
+            scope=SCOPE_MODERATION,
+            guild=guild,
+        )
+        dm_embed.add_field(name="Reason", value=format_reason_value(data["reason"], limit=1000), inline=False)
+        if data["user_msg"]:
+            dm_embed.add_field(name="Moderator Message", value=format_log_quote(data["user_msg"], limit=1024), inline=False)
+
+        if p_type == "ban" and minutes == -1:
+            dm_embed.add_field(name="Duration", value="Ban", inline=True)
+        elif minutes > 0:
+            dm_embed.add_field(name="Duration", value=format_duration(minutes), inline=True)
+
+        view = AppealView(guild.id, target.id, data["moderator_id"], minutes, now_iso(), data["reason"])
+        await target.send(embed=dm_embed, view=view)
+    except Exception:
+        pass
+
+    try:
+        p_type = data["type"]
+        minutes = data["duration"]
+        reason = f"Public Execution (Vote passed) - {data['reason']}"
+
+        if p_type == "ban":
+            await guild.ban(target, reason=reason)
+        elif p_type == "kick":
+            if not target_member:
+                raise ValueError("User is not in the server, cannot kick.")
+            await guild.kick(target_member, reason=reason)
+        elif p_type == "timeout":
+            if not target_member:
+                raise ValueError("User is not in the server, cannot timeout.")
+            await target_member.timeout(get_valid_duration(minutes), reason=reason)
+        elif p_type == "softban":
+            await guild.ban(target, reason=reason, delete_message_days=1)
+            await guild.unban(discord.Object(id=target.id), reason="Softban cleanup")
+
+        record = {
+            "reason": f"Public Execution: {data['reason']}",
+            "moderator": moderator.id if moderator else data["moderator_id"],
+            "duration_minutes": minutes,
+            "timestamp": now_iso(),
+            "escalated": data["escalated"],
+            "note": data["note"],
+            "user_msg": data["user_msg"],
+            "target_name": get_user_display_name(target),
+            "type": p_type,
+            "active": p_type == "ban",
+        }
+        record = await bot.data_manager.add_punishment(str(target.id), record)
+        case_label = get_case_label(record)
+
+        action_msg = "has been banned"
+        if p_type == "kick":
+            action_msg = "has been kicked"
+        elif p_type == "timeout":
+            action_msg = "has been timed out"
+        elif p_type == "warn":
+            action_msg = "has been warned"
+
+        await channel.send(f"{case_label}: {target.mention} {action_msg}.")
+
+        actor_ref = format_user_ref(moderator) if moderator else format_user_id_ref(data["moderator_id"])
+        log_embed = build_punishment_execution_log_embed(
+            guild=guild,
+            case_label=case_label,
+            actor=actor_ref,
+            target=format_user_ref(target),
+            record=record,
+            thumbnail=target.display_avatar.url,
+        )
+        log_embed.title = f"{case_label} Public Execution"
+        log_embed.description = "> A community vote threshold was reached and the configured action was executed."
+        log_embed.insert_field_at(2, name="Votes Reached", value=str(data["count"]), inline=True)
+        await send_punishment_log(guild, log_embed)
+    except Exception as e:
+        await channel.send(f"Execution failed: {e}")
+
+
+class PublicExecutionApprovalView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=86400)
+
+    @discord.ui.button(label="Approve Action", style=discord.ButtonStyle.danger)
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.message is None or interaction.guild is None:
+            await interaction.response.send_message("This execution vote is no longer active.", ephemeral=True)
+            return
+
+        data = bot.active_executions.get(interaction.message.id)
+        if not data:
+            await interaction.response.send_message("This execution vote is no longer active.", ephemeral=True)
+            return
+
+        voters = data.setdefault("voters", set())
+        if interaction.user.id in voters:
+            await interaction.response.send_message("You already approved this action.", ephemeral=True)
+            return
+
+        voters.add(interaction.user.id)
+        approvals = len(voters)
+        updated_embed = build_public_execution_embed(
+            interaction.guild,
+            target_id=data["target_id"],
+            target_avatar_url=data.get("target_avatar_url"),
+            punishment_type=data["type"],
+            reason=data["reason"],
+            threshold=data["count"],
+            minutes=data["duration"],
+            approvals=approvals,
+        )
+
+        if approvals >= data["count"]:
+            bot.active_executions.pop(interaction.message.id, None)
+            button.disabled = True
+            await interaction.response.edit_message(embed=updated_embed, view=self)
+            await execute_public_execution_vote(interaction.channel, interaction.guild, data)
+            return
+
+        await interaction.response.edit_message(embed=updated_embed, view=self)
+
+
 class PunishDetailsModal(discord.ui.Modal):
     def __init__(self, target, moderator, reason, rules, origin_message=None, public=False, reaction_count=None):
         super().__init__(title=f"Punish: {target.display_name}")
@@ -4309,28 +4623,16 @@ class PunishDetailsModal(discord.ui.Modal):
             else: note = f"[{tier_info}]"
         
         if self.reaction_count:
-            action_verb = "Punish"
-            if punishment_type == "ban": action_verb = "Ban"
-            elif punishment_type == "kick": action_verb = "Kick"
-            elif punishment_type == "timeout": action_verb = "Timeout"
-            elif punishment_type == "warn": action_verb = "Warn"
-            elif punishment_type == "softban": action_verb = "Softban"
-
-            embed = make_embed(
-                "Public Execution Started",
-                f"React to this message to **{action_verb}** {self.target.mention}.\n\nThe execution will happen when **{self.reaction_count}** reactions are reached.",
-                kind="danger",
-                scope=SCOPE_MODERATION,
-                guild=interaction.guild,
-                thumbnail=self.target.display_avatar.url,
+            embed = build_public_execution_embed(
+                interaction.guild,
+                target_id=self.target.id,
+                target_avatar_url=self.target.display_avatar.url,
+                punishment_type=punishment_type,
+                reason=reason,
+                threshold=self.reaction_count,
+                minutes=minutes,
             )
-            embed.add_field(name="Reason", value=format_reason_value(reason, limit=200), inline=False)
-            if minutes > 0:
-                embed.add_field(name="Duration", value=format_duration(minutes), inline=True)
-            
-            msg = await interaction.followup.send(embed=embed, ephemeral=False)
-            await msg.add_reaction("✅")
-            
+            msg = await interaction.followup.send(embed=embed, view=PublicExecutionApprovalView(), ephemeral=False)
             bot.active_executions[msg.id] = {
                 "target_id": self.target.id,
                 "count": self.reaction_count,
@@ -4340,7 +4642,9 @@ class PunishDetailsModal(discord.ui.Modal):
                 "moderator_id": self.moderator.id,
                 "duration": minutes,
                 "type": punishment_type,
-                "escalated": is_escalated
+                "escalated": is_escalated,
+                "target_avatar_url": self.target.display_avatar.url,
+                "voters": set(),
             }
             return
 
@@ -4424,28 +4728,16 @@ class CustomPunishDetailsModal(discord.ui.Modal):
             minutes = 0
 
         if self.reaction_count:
-            action_verb = "Punish"
-            if final_type == "ban": action_verb = "Ban"
-            elif final_type == "kick": action_verb = "Kick"
-            elif final_type == "timeout": action_verb = "Timeout"
-            elif final_type == "warn": action_verb = "Warn"
-            elif final_type == "softban": action_verb = "Softban"
-
-            embed = make_embed(
-                "Public Execution Started",
-                f"React to this message to **{action_verb}** {self.target.mention}.\n\nThe execution will happen when **{self.reaction_count}** reactions are reached.",
-                kind="danger",
-                scope=SCOPE_MODERATION,
-                guild=interaction.guild,
-                thumbnail=self.target.display_avatar.url,
+            embed = build_public_execution_embed(
+                interaction.guild,
+                target_id=self.target.id,
+                target_avatar_url=self.target.display_avatar.url,
+                punishment_type=final_type,
+                reason=self.custom_reason.value,
+                threshold=self.reaction_count,
+                minutes=minutes,
             )
-            embed.add_field(name="Reason", value=format_reason_value(self.custom_reason.value, limit=200), inline=False)
-            if minutes > 0:
-                embed.add_field(name="Duration", value=format_duration(minutes), inline=True)
-            
-            msg = await interaction.followup.send(embed=embed, ephemeral=False)
-            await msg.add_reaction("✅")
-            
+            msg = await interaction.followup.send(embed=embed, view=PublicExecutionApprovalView(), ephemeral=False)
             bot.active_executions[msg.id] = {
                 "target_id": self.target.id,
                 "count": self.reaction_count,
@@ -4455,7 +4747,9 @@ class CustomPunishDetailsModal(discord.ui.Modal):
                 "moderator_id": self.moderator.id,
                 "duration": minutes,
                 "type": final_type,
-                "escalated": False
+                "escalated": False,
+                "target_avatar_url": self.target.display_avatar.url,
+                "voters": set(),
             }
             return
 
@@ -5668,7 +5962,7 @@ def generate_transcript_html(messages, user):
                 if ext in ['png', 'jpg', 'jpeg', 'gif', 'webp']:
                     att_html += f'<a href="{safe_url}" target="_blank"><img src="{safe_url}" class="attachment-img" alt="{safe_filename}"></a><br>'
                 else:
-                    att_html += f'<a href="{safe_url}" target="_blank">📎 {safe_filename}</a><br>'
+                    att_html += f'<a href="{safe_url}" target="_blank">Attachment: {safe_filename}</a><br>'
             att_html += '</div>'
 
         # Stickers
@@ -7305,7 +7599,7 @@ class ConfigRoleSelect(discord.ui.RoleSelect):
         role = self.values[0]
         bot.data_manager.config[self.config_key] = role.id
         await bot.data_manager.save_config()
-        await interaction.response.send_message(f"✅ **{self.config_name}** updated to {role.mention}", ephemeral=True)
+        await interaction.response.send_message(f"**{self.config_name}** updated to {role.mention}", ephemeral=True)
 
 class MultiConfigRoleSelect(discord.ui.RoleSelect):
     def __init__(self, config_key: str, config_name: str):
@@ -7319,7 +7613,7 @@ class MultiConfigRoleSelect(discord.ui.RoleSelect):
         bot.data_manager.config[self.config_key] = role_ids
         await bot.data_manager.save_config()
         mentions = ", ".join([r.mention for r in roles])
-        await interaction.response.send_message(f"✅ **{self.config_name}** updated to: {mentions}", ephemeral=True)
+        await interaction.response.send_message(f"**{self.config_name}** updated to: {mentions}", ephemeral=True)
 
 class ConfigChannelSelect(discord.ui.ChannelSelect):
     def __init__(self, config_key: str, config_name: str, channel_types=None):
@@ -7339,11 +7633,11 @@ class ConfigChannelSelect(discord.ui.ChannelSelect):
             await interaction.response.defer(ephemeral=True)
             try:
                 await send_modmail_panel_message(channel, interaction.guild)
-                await interaction.followup.send(f"✅ **{self.config_name}** updated to {channel.mention} and panel sent.", ephemeral=True)
+                await interaction.followup.send(f"**{self.config_name}** updated to {channel.mention} and panel sent.", ephemeral=True)
             except Exception as e:
-                await interaction.followup.send(f"✅ **{self.config_name}** updated to {channel.mention}, but failed to send panel: {e}", ephemeral=True)
+                await interaction.followup.send(f"**{self.config_name}** updated to {channel.mention}, but failed to send panel: {e}", ephemeral=True)
         else:
-            await interaction.response.send_message(f"✅ **{self.config_name}** updated to {channel.mention}", ephemeral=True)
+            await interaction.response.send_message(f"**{self.config_name}** updated to {channel.mention}", ephemeral=True)
 
 class ConfigTypeSelect(discord.ui.Select):
     def __init__(self, category: str, *, row: Optional[int] = None):
@@ -9765,29 +10059,50 @@ async def automod_cmd(interaction: discord.Interaction):
     await interaction.response.send_message(embed=build_automod_dashboard_embed(interaction.guild), view=AutoModDashboardView(), ephemeral=True)
 
 def _build_branding_panel_embed(guild: discord.Guild) -> discord.Embed:
-    branding = bot.data_manager._configs.get(guild.id, {}).get("_branding", {})
-    color_val = branding.get("embed_color") or "Default"
-    footer_val = branding.get("footer_text") or "None"
-    banner_val = branding.get("modmail_banner_url") or "Default"
-    nick = guild.me.nick if guild.me else None
-    nick_val = nick or "Default"
+    branding = _get_branding_config(guild.id)
+    member = guild.me
+    if member is None and getattr(bot, "user", None) is not None:
+        member = guild.get_member(bot.user.id)
+
+    def format_value(value: Optional[str], *, default: str = "Default", limit: int = 60) -> str:
+        clean = str(value or "").strip()
+        if not clean:
+            return f"`{default}`"
+        if len(clean) > limit:
+            clean = f"{clean[:limit]}..."
+        return f"`{clean}`"
+
+    current_display_name = getattr(member, "display_name", None) or getattr(bot.user, "name", None) or "Default"
+    avatar_live = "Custom" if member and getattr(member, "guild_avatar", None) else "Default"
+    banner_live = "Custom" if member and getattr(member, "guild_banner", None) else "Default"
 
     embed = make_embed(
         "Server Branding",
-        "> Customize how the bot looks in your server. Changes apply to all new embeds immediately.",
+        (
+            "> Manage the bot's server-specific profile and panel appearance.\n"
+            "> Display name uses the bot nickname for this server. Footer format is fixed to `Server Name • Area`."
+        ),
         kind="neutral",
         scope=SCOPE_SYSTEM,
         guild=guild,
     )
-    embed.add_field(name="Embed Color", value=f"`{color_val}`", inline=True)
-    embed.add_field(name="Footer Text", value=f"`{footer_val}`", inline=True)
-    embed.add_field(name="Bot Nickname", value=f"`{nick_val}`", inline=True)
-    embed.add_field(name="Modmail Banner", value=f"`{banner_val[:60]}...`" if len(banner_val) > 60 else f"`{banner_val}`", inline=False)
+    if member and getattr(member, "display_avatar", None):
+        embed.set_thumbnail(url=member.display_avatar.url)
+    if member and getattr(member, "guild_banner", None):
+        embed.set_image(url=member.guild_banner.url)
+
+    embed.add_field(name="Embed Color", value=format_value(branding.get("embed_color")), inline=True)
+    embed.add_field(name="Display Name", value=format_value(branding.get("display_name") or current_display_name), inline=True)
+    embed.add_field(name="Profile Bio", value=format_value(branding.get("bio")), inline=True)
+    embed.add_field(name="Profile Avatar", value=format_value(branding.get("avatar_url"), default=avatar_live), inline=False)
+    embed.add_field(name="Profile Banner", value=format_value(branding.get("banner_url"), default=banner_live), inline=False)
+    embed.add_field(name="Modmail Banner", value=format_value(branding.get("modmail_banner_url")), inline=False)
+    embed.add_field(name="Footer Preview", value=format_value(_build_footer_text(SCOPE_SYSTEM, guild), default="Default"), inline=False)
     embed.add_field(
         name="How to edit",
         value=(
-            "> Use the buttons below to edit each setting.\n"
-            "> **Reset** clears all custom branding back to defaults."
+            "> Use the buttons below to update the bot profile for this server.\n"
+            "> Reset clears stored branding and removes the server-specific bot profile."
         ),
         inline=False,
     )
@@ -9813,71 +10128,120 @@ class BrandingColorModal(discord.ui.Modal, title="Set Embed Color"):
             )
             return
         color = raw if raw.startswith("#") else f"#{raw}"
-        cfg = bot.data_manager._configs.setdefault(interaction.guild_id, {})
-        cfg.setdefault("_branding", {})["embed_color"] = color
-        bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
-        await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
+        await save_branding_settings(interaction.guild_id, {"embed_color": color})
         embed = _build_branding_panel_embed(interaction.guild)
         await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
 
 
-class BrandingFooterModal(discord.ui.Modal, title="Set Footer Text"):
-    footer_text = discord.ui.TextInput(
-        label="Footer text appended to all embeds",
-        placeholder="My Community",
-        required=False,
-        max_length=64,
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        cfg = bot.data_manager._configs.setdefault(interaction.guild_id, {})
-        val = self.footer_text.value.strip()
-        if val:
-            cfg.setdefault("_branding", {})["footer_text"] = val
-        else:
-            cfg.setdefault("_branding", {}).pop("footer_text", None)
-        bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
-        await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
-        embed = _build_branding_panel_embed(interaction.guild)
-        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
-
-
-class BrandingNicknameModal(discord.ui.Modal, title="Set Bot Nickname"):
-    bot_nickname = discord.ui.TextInput(
-        label="Bot nickname in this server (blank = reset)",
+class BrandingDisplayNameModal(discord.ui.Modal, title="Set Display Name"):
+    display_name = discord.ui.TextInput(
+        label="Bot display name in this server (blank = reset)",
         placeholder="ModBot",
         required=False,
         max_length=32,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        nick = self.bot_nickname.value.strip() or None
-        if interaction.guild and interaction.guild.me:
-            try:
-                await interaction.guild.me.edit(nick=nick)
-            except Exception:
-                pass
+        display_name = self.display_name.value.strip()
+        error = await apply_guild_member_branding(
+            interaction.guild,
+            display_name=display_name or None,
+            reason=f"Branding display name updated by {interaction.user}",
+        )
+        if error:
+            await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
+            return
+        await save_branding_settings(interaction.guild_id, {"display_name": display_name or None})
         embed = _build_branding_panel_embed(interaction.guild)
         await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
 
 
-class BrandingBannerModal(discord.ui.Modal, title="Set Modmail Banner URL"):
-    banner_url = discord.ui.TextInput(
-        label="Image URL for modmail panel banner",
+class BrandingAvatarModal(discord.ui.Modal, title="Set Profile Avatar URL"):
+    avatar_url = discord.ui.TextInput(
+        label="HTTPS image URL for the bot avatar (blank = reset)",
         placeholder="https://cdn.discordapp.com/...",
         required=False,
         max_length=500,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
-        cfg = bot.data_manager._configs.setdefault(interaction.guild_id, {})
-        val = self.banner_url.value.strip()
-        if val:
-            cfg.setdefault("_branding", {})["modmail_banner_url"] = val
-        else:
-            cfg.setdefault("_branding", {}).pop("modmail_banner_url", None)
-        bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
-        await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
+        avatar_url = self.avatar_url.value.strip()
+        error = await apply_guild_member_branding(
+            interaction.guild,
+            avatar_url=avatar_url or None,
+            reason=f"Branding avatar updated by {interaction.user}",
+        )
+        if error:
+            await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
+            return
+        await save_branding_settings(interaction.guild_id, {"avatar_url": avatar_url or None})
+        embed = _build_branding_panel_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+
+
+class BrandingBannerModal(discord.ui.Modal, title="Set Profile Banner URL"):
+    banner_url = discord.ui.TextInput(
+        label="HTTPS image URL for the bot banner (blank = reset)",
+        placeholder="https://cdn.discordapp.com/...",
+        required=False,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        banner_url = self.banner_url.value.strip()
+        error = await apply_guild_member_branding(
+            interaction.guild,
+            banner_url=banner_url or None,
+            reason=f"Branding banner updated by {interaction.user}",
+        )
+        if error:
+            await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
+            return
+        await save_branding_settings(interaction.guild_id, {"banner_url": banner_url or None})
+        embed = _build_branding_panel_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+
+
+class BrandingBioModal(discord.ui.Modal, title="Set Profile Bio"):
+    profile_bio = discord.ui.TextInput(
+        label="Bot bio in this server (blank = reset)",
+        style=discord.TextStyle.paragraph,
+        placeholder="Support bot for this community.",
+        required=False,
+        max_length=MAX_GUILD_MEMBER_BIO_LENGTH,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        bio = self.profile_bio.value.strip()
+        error = await apply_guild_member_branding(
+            interaction.guild,
+            bio=bio or None,
+            reason=f"Branding bio updated by {interaction.user}",
+        )
+        if error:
+            await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
+            return
+        await save_branding_settings(interaction.guild_id, {"bio": bio or None})
+        embed = _build_branding_panel_embed(interaction.guild)
+        await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
+
+
+class BrandingModmailBannerModal(discord.ui.Modal, title="Set Modmail Banner URL"):
+    banner_url = discord.ui.TextInput(
+        label="HTTPS image URL for modmail panel banner",
+        placeholder="https://cdn.discordapp.com/...",
+        required=False,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        banner_url = self.banner_url.value.strip()
+        if banner_url:
+            _payload, error = await fetch_image_bytes(banner_url, max_bytes=PROFILE_BRANDING_MAX_BYTES)
+            if error:
+                await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
+                return
+        await save_branding_settings(interaction.guild_id, {"modmail_banner_url": banner_url or None})
         embed = _build_branding_panel_embed(interaction.guild)
         await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
 
@@ -9886,33 +10250,47 @@ class BrandingPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=300)
 
-    @discord.ui.button(label="Embed Color", style=discord.ButtonStyle.primary, emoji="🎨", row=0)
+    @discord.ui.button(label="Embed Color", style=discord.ButtonStyle.primary, row=0)
     async def set_color(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BrandingColorModal())
 
-    @discord.ui.button(label="Footer Text", style=discord.ButtonStyle.primary, emoji="✏️", row=0)
-    async def set_footer(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(BrandingFooterModal())
+    @discord.ui.button(label="Display Name", style=discord.ButtonStyle.primary, row=0)
+    async def set_display_name(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BrandingDisplayNameModal())
 
-    @discord.ui.button(label="Bot Nickname", style=discord.ButtonStyle.primary, emoji="🏷️", row=0)
-    async def set_nickname(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(BrandingNicknameModal())
+    @discord.ui.button(label="Profile Avatar", style=discord.ButtonStyle.primary, row=0)
+    async def set_avatar(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BrandingAvatarModal())
 
-    @discord.ui.button(label="Modmail Banner", style=discord.ButtonStyle.secondary, emoji="🖼️", row=1)
+    @discord.ui.button(label="Profile Banner", style=discord.ButtonStyle.secondary, row=1)
     async def set_banner(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BrandingBannerModal())
 
-    @discord.ui.button(label="Reset All", style=discord.ButtonStyle.danger, emoji="🗑️", row=1)
+    @discord.ui.button(label="Profile Bio", style=discord.ButtonStyle.secondary, row=1)
+    async def set_bio(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BrandingBioModal())
+
+    @discord.ui.button(label="Modmail Banner", style=discord.ButtonStyle.secondary, row=1)
+    async def set_modmail_banner(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BrandingModmailBannerModal())
+
+    @discord.ui.button(label="Reset All", style=discord.ButtonStyle.danger, row=2)
     async def reset_branding(self, interaction: discord.Interaction, button: discord.ui.Button):
+        error = await apply_guild_member_branding(
+            interaction.guild,
+            display_name=None,
+            avatar_url=None,
+            banner_url=None,
+            bio=None,
+            reason=f"Branding reset by {interaction.user}",
+        )
+        if error:
+            await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
+            return
         cfg = bot.data_manager._configs.setdefault(interaction.guild_id, {})
         cfg["_branding"] = {}
         bot.data_manager._mark_dirty(interaction.guild_id, "guild_configs")
         await bot.data_manager.save_guild(interaction.guild_id, {"guild_configs"})
-        if interaction.guild and interaction.guild.me:
-            try:
-                await interaction.guild.me.edit(nick=None)
-            except Exception:
-                pass
         embed = _build_branding_panel_embed(interaction.guild)
         await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
 
@@ -10144,148 +10522,7 @@ async def on_guild_role_update(before: discord.Role, after: discord.Role):
 
 @bot.event
 async def on_raw_reaction_add(payload):
-    if payload.user_id == bot.user.id: return
-
-    if bot.data_manager and payload.guild_id:
-        bot.data_manager._current_guild_id = payload.guild_id
-        await bot.data_manager.ensure_guild_loaded(payload.guild_id)
-
-    if payload.message_id in bot.active_executions:
-        data = bot.active_executions[payload.message_id]
-        
-        # Prevent duplicate executions by removing immediately if threshold met
-        # We check count first
-        
-        # Only count ✅
-        if str(payload.emoji) != "✅": return
-        
-        channel = bot.get_channel(payload.channel_id)
-        if not channel: return
-        
-        try:
-            msg = await channel.fetch_message(payload.message_id)
-        except Exception:
-            return
-            
-        reaction = discord.utils.get(msg.reactions, emoji="✅")
-        if not reaction: return
-        
-        # Count includes bot's reaction, so we check total count
-        if reaction.count >= data["count"]:
-            # Remove immediately to prevent race conditions
-            del bot.active_executions[payload.message_id]
-            
-            # EXECUTE
-            guild = bot.get_guild(payload.guild_id)
-            if not guild:
-                return
-            
-            try:
-                target = await guild.fetch_member(data["target_id"])
-            except discord.NotFound:
-                try:
-                    target = await bot.fetch_user(data["target_id"])
-                except Exception:
-                    target = None
-            target_member = target if isinstance(target, discord.Member) else await resolve_member(guild, data["target_id"])
-            
-            try:
-                moderator = await guild.fetch_member(data["moderator_id"])
-            except Exception:
-                moderator = None
-            
-            if target:
-                # DM User
-                try:
-                    # 1:1 Match with execute_punishment DM
-                    p_type = data["type"]
-                    minutes = data["duration"]
-                    
-                    action_verb = "Banned" if p_type == "ban" else ("Kicked" if p_type == "kick" else "Timed Out")
-                    
-                    dm_embed = make_embed(
-                        "Public Execution Result",
-                        f"> You have been **{action_verb}** in **{guild.name}** through a public execution vote.",
-                        kind="danger",
-                        scope=SCOPE_MODERATION,
-                        guild=guild,
-                    )
-                    dm_embed.add_field(name="Reason", value=format_reason_value(data["reason"], limit=1000), inline=False)
-                    if data["user_msg"]:
-                        dm_embed.add_field(name="Moderator Message", value=format_log_quote(data["user_msg"], limit=1024), inline=False)
-                    
-                    if p_type == "ban" and minutes == -1:
-                        dm_embed.add_field(name="Duration", value="Ban", inline=True)
-                    elif minutes > 0:
-                        dm_embed.add_field(name="Duration", value=format_duration(minutes), inline=True)
-
-                    view = AppealView(guild.id, target.id, data["moderator_id"], minutes, now_iso(), data["reason"])
-                    await target.send(embed=dm_embed, view=view)
-                except Exception: pass
-                
-                # Action
-                try:
-                    p_type = data["type"]
-                    minutes = data["duration"]
-                    reason = f"Public Execution (Vote passed) - {data['reason']}"
-                    
-                    if p_type == "ban":
-                        await guild.ban(target, reason=reason)
-                    elif p_type == "kick":
-                        if not target_member:
-                            raise ValueError("User is not in the server, cannot kick.")
-                        await guild.kick(target_member, reason=reason)
-                    elif p_type == "timeout":
-                        if not target_member:
-                            raise ValueError("User is not in the server, cannot timeout.")
-                        await target_member.timeout(get_valid_duration(minutes), reason=reason)
-                    elif p_type == "softban":
-                        await guild.ban(target, reason=reason, delete_message_days=1)
-                        await guild.unban(discord.Object(id=target.id), reason="Softban cleanup")
-                    
-                    # Log
-                    record = {
-                        "reason": f"Public Execution: {data['reason']}",
-                        "moderator": moderator.id if moderator else data["moderator_id"],
-                        "duration_minutes": minutes,
-                        "timestamp": now_iso(),
-                        "escalated": data["escalated"],
-                        "note": data["note"],
-                        "user_msg": data["user_msg"],
-                        "target_name": get_user_display_name(target),
-                        "type": p_type,
-                        "active": p_type == "ban"
-                    }
-                    record = await bot.data_manager.add_punishment(str(target.id), record)
-                    case_label = get_case_label(record)
-                    
-                    action_msg = "has been banned"
-                    if p_type == "kick": action_msg = "has been kicked"
-                    elif p_type == "timeout": action_msg = "has been timed out"
-                    elif p_type == "warn": action_msg = "has been warned"
-                    
-                    await channel.send(f"{case_label}: {target.mention} {action_msg}.")
-                    
-                    # Log to channel
-                    actor_ref = format_user_ref(moderator) if moderator else format_user_id_ref(data["moderator_id"])
-                    log_embed = build_punishment_execution_log_embed(
-                        guild=guild,
-                        case_label=case_label,
-                        actor=actor_ref,
-                        target=format_user_ref(target),
-                        record=record,
-                        thumbnail=target.display_avatar.url,
-                    )
-                    log_embed.title = f"{case_label} Public Execution"
-                    log_embed.description = "> A community vote threshold was reached and the configured action was executed."
-                    log_embed.insert_field_at(2, name="Votes Reached", value=str(data["count"]), inline=True)
-                    await send_punishment_log(guild, log_embed)
-                    
-                except Exception as e:
-                    await channel.send(f"Execution failed: {e}")
-            else:
-                # Target not found (left server and fetch_user failed), clean up
-                pass
+    return
 
 @bot.command()
 async def sync(ctx):
@@ -11072,7 +11309,6 @@ async def on_message(message: discord.Message):
                         await refresh_modmail_ticket_log(guild, str(message.author.id))
                     if attachment_notice:
                         await message.channel.send(attachment_notice)
-                    await message.add_reaction("✅")
                 except Exception as e:
                     await message.channel.send(f"Error relaying message: {e}")
             else:
@@ -11103,7 +11339,7 @@ async def on_message(message: discord.Message):
             if ticket and ticket.get("status") == "open":
                 user = await resolve_modmail_user(target_uid)
                 if user is None:
-                    await message.channel.send("❌ Failed to send: The ticket user could not be resolved.")
+                    await message.channel.send("Failed to send: The ticket user could not be resolved.")
                     return
                 try:
                     content = message.content if message.content else None
@@ -11128,15 +11364,13 @@ async def on_message(message: discord.Message):
                     await refresh_modmail_ticket_log(message.guild, target_uid)
                     if attachment_notice:
                         await message.channel.send(attachment_notice)
-                    await message.add_reaction("📨")
                 except discord.Forbidden:
-                    await message.channel.send("❌ Failed to send: User has blocked the bot or DMs are disabled.")
+                    await message.channel.send("Failed to send: User has blocked the bot or DMs are disabled.")
                 except Exception as e:
-                    await message.channel.send(f"❌ Failed to send message: {e}")
+                    await message.channel.send(f"Failed to send message: {e}")
             return
 
     await bot.process_commands(message)
 
 async def on_ready():
     pass  # Handled by MGXBot.on_ready in mbx_bot.py
-

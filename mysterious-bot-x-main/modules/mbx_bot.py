@@ -133,7 +133,7 @@ class MGXBot(commands.Bot):
                 try:
                     owner = await self.fetch_user(oid)
                     await owner.send(
-                        f"\u26a0\ufe0f **Rejected guild join**\n"
+                        f"**Rejected guild join**\n"
                         f"**Server:** {guild.name} (`{guild.id}`)\n"
                         f"**Reason:** {reason}"
                     )

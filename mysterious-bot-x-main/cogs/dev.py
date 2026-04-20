@@ -179,7 +179,7 @@ class DevCog(commands.Cog):
             if not ch:
                 continue
             try:
-                await ch.send(f"📢 **[Developer Broadcast]** {message}")
+                await ch.send(f"**[Developer Broadcast]** {message}")
                 sent += 1
             except Exception:
                 failed += 1

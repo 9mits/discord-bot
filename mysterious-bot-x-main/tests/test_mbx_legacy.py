@@ -208,5 +208,47 @@ class MbxLegacyModmailTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(allowed_mentions.users)
 
 
+class MbxLegacyBrandingTests(unittest.IsolatedAsyncioTestCase):
+    def test_build_footer_text_uses_guild_name_first(self):
+        guild = SimpleNamespace(name="Cool Server")
+
+        footer_text = mbx_legacy._build_footer_text(mbx_legacy.SCOPE_SYSTEM, guild)
+
+        self.assertEqual(footer_text, "Cool Server • Control Center")
+
+    def test_build_footer_text_falls_back_to_brand_name_without_guild(self):
+        footer_text = mbx_legacy._build_footer_text(mbx_legacy.SCOPE_SYSTEM, None)
+
+        self.assertEqual(footer_text, f"{mbx_legacy.BRAND_NAME} • {mbx_legacy.SCOPE_SYSTEM}")
+
+    async def test_apply_guild_member_branding_uses_current_member_route_payload(self):
+        request = AsyncMock()
+        guild = SimpleNamespace(id=123)
+        fake_bot = SimpleNamespace(http=SimpleNamespace(request=request))
+
+        with patch.object(
+            mbx_legacy,
+            "fetch_image_data_uri",
+            AsyncMock(side_effect=[("data:image/png;base64,AAA", None), ("data:image/png;base64,BBB", None)]),
+        ), patch.object(mbx_legacy, "bot", fake_bot):
+            error = await mbx_legacy.apply_guild_member_branding(
+                guild,
+                display_name="Server Bot",
+                avatar_url="https://cdn.example/avatar.png",
+                banner_url="https://cdn.example/banner.png",
+                bio="Guild bio",
+                reason="test update",
+            )
+
+        self.assertIsNone(error)
+        request.assert_awaited_once()
+        payload = request.await_args.kwargs["json"]
+        self.assertEqual(payload["nick"], "Server Bot")
+        self.assertEqual(payload["avatar"], "data:image/png;base64,AAA")
+        self.assertEqual(payload["banner"], "data:image/png;base64,BBB")
+        self.assertEqual(payload["bio"], "Guild bio")
+        self.assertEqual(request.await_args.kwargs["reason"], "test update")
+
+
 if __name__ == "__main__":
     unittest.main()
