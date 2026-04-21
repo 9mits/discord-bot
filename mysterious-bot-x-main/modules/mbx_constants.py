@@ -73,13 +73,13 @@ SCOPE_ANALYTICS = "Analytics"
 THEME_ORANGE = discord.Color.from_rgb(255, 153, 0)
 EMBED_PALETTE = {
     "neutral":   THEME_ORANGE,
-    "success":   discord.Color.from_rgb(87, 242, 135),
-    "warning":   THEME_ORANGE,
-    "danger":    discord.Color.from_rgb(237, 66, 69),
-    "info":      THEME_ORANGE,
-    "muted":     THEME_ORANGE,
-    "support":   THEME_ORANGE,
-    "analytics": THEME_ORANGE,
+    "success":   discord.Color.from_rgb(87, 242, 135),   # green
+    "warning":   discord.Color.from_rgb(255, 204, 0),    # amber
+    "danger":    discord.Color.from_rgb(237, 66, 69),    # red
+    "info":      discord.Color.from_rgb(88, 166, 255),   # blue
+    "muted":     discord.Color.from_rgb(142, 146, 151),  # grey
+    "support":   discord.Color.from_rgb(114, 137, 218),  # blurple
+    "analytics": discord.Color.from_rgb(157, 107, 242),  # purple
 }
 
 FEATURE_FLAG_LABELS = {

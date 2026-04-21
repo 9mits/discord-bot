@@ -442,10 +442,52 @@ async def prepare_modmail_relay_attachments(attachments) -> Tuple[List[discord.F
 
 
 async def send_modmail_thread_intro(thread: discord.Thread, user, category: str, fields_data: List[str]) -> None:
-    await thread.send(
-        f"**Ticket Created**\nUser: {user.mention}\nCategory: {category}\n\n" + "\n".join(fields_data),
-        allowed_mentions=discord.AllowedMentions.none(),
+    guild = thread.guild
+    member = guild.get_member(user.id) if guild else None
+
+    embed = make_embed(
+        "New Support Ticket",
+        f"> A new ticket has been opened by {user.mention}.",
+        kind="support",
+        scope=SCOPE_SUPPORT,
+        guild=guild,
+        thumbnail=user.display_avatar.url,
     )
+    embed.add_field(name="User", value=f"{user.mention}\n`{user.id}`", inline=True)
+    embed.add_field(name="Category", value=category, inline=True)
+
+    now = discord.utils.utcnow()
+    account_age_days = (now - user.created_at.replace(tzinfo=timezone.utc)).days
+    embed.add_field(
+        name="Account Created",
+        value=f"{discord.utils.format_dt(user.created_at, 'D')}\n({account_age_days}d ago)",
+        inline=True,
+    )
+
+    if member and member.joined_at:
+        join_age_days = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
+        embed.add_field(
+            name="Joined Server",
+            value=f"{discord.utils.format_dt(member.joined_at, 'D')}\n({join_age_days}d ago)",
+            inline=True,
+        )
+
+    history = bot.data_manager.punishments.get(str(user.id), []) if getattr(bot, "data_manager", None) else []
+    active_cases = [r for r in history if is_record_active(r)]
+    embed.add_field(name="Prior Cases", value=str(len(history)), inline=True)
+    embed.add_field(name="Active Cases", value=str(len(active_cases)), inline=True)
+
+    for line in fields_data:
+        line = line.strip()
+        if not line:
+            continue
+        if ":" in line:
+            name, value = line.split(":", 1)
+            embed.add_field(name=name.strip(), value=value.strip() or "—", inline=False)
+        else:
+            embed.add_field(name="Note", value=line, inline=False)
+
+    await thread.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 def format_duration(minutes: int) -> str:
     if minutes == -1:
@@ -511,6 +553,24 @@ def format_log_notes(*lines: Optional[str], limit: int = 1000) -> str:
     if not cleaned:
         return "> None"
     return truncate_text("\n".join(f"> {line}" for line in cleaned), limit)
+
+
+class ExpirableMixin:
+    """
+    Mixin for discord.ui.View subclasses.
+    When the view's timeout fires, disables all components and edits the message
+    so users see "This menu has expired" rather than silent non-responsive buttons.
+    """
+    async def on_timeout(self) -> None:
+        message = getattr(self, "message", None)
+        if message is None:
+            return
+        for item in self.children:
+            item.disabled = True
+        try:
+            await message.edit(content="-# This menu has expired — re-run the command to continue.", view=self)
+        except Exception:
+            pass
 
 
 UNDO_REASON_PRESETS = [
@@ -1646,6 +1706,9 @@ def build_punishment_execution_log_embed(
     if user_msg:
         embed.add_field(name="User Message", value=format_plain_log_block(user_msg, limit=1000), inline=False)
 
+    if record.get("dm_delivered") is False:
+        embed.add_field(name="User DM", value="Not delivered — user has DMs disabled or blocked the bot", inline=False)
+
     if native_log_url:
         embed.add_field(name="Discord AutoMod Log", value=f"[Open Native Log]({native_log_url})", inline=False)
 
@@ -2048,14 +2111,47 @@ def build_modmail_panel_embed(guild: discord.Guild, *, in_dm: bool = False) -> d
     return embed
 
 
+def _setup_health_check(guild: discord.Guild, config: dict) -> str:
+    """Return a compact health status line for the setup dashboard."""
+    general_log_id = get_general_log_channel_id(config)
+
+    def _role_ok(key: str) -> bool:
+        rid = config.get(key)
+        return bool(rid and guild.get_role(int(rid)))
+
+    def _ch_ok(cid) -> bool:
+        return bool(cid and guild.get_channel(int(cid)))
+
+    checks = [
+        ("Owner role", _role_ok("role_owner")),
+        ("Mod role", _role_ok("role_mod")),
+        ("General log", _ch_ok(general_log_id)),
+        ("Modmail inbox", _ch_ok(config.get("modmail_inbox_channel"))),
+        ("Appeals channel", _ch_ok(config.get("appeal_channel_id"))),
+    ]
+
+    ok = sum(1 for _, v in checks if v)
+    total = len(checks)
+    if ok == total:
+        return "✅ All critical settings look good"
+    lines = [f"⚠️ {ok}/{total} checks passed — fix the items below:"]
+    for name, v in checks:
+        if not v:
+            lines.append(f"  • **{name}** — not set or deleted")
+    return "\n".join(lines)
+
+
 def build_setup_dashboard_embed(guild: discord.Guild) -> discord.Embed:
     config = bot.data_manager.config
     general_log_channel_id = get_general_log_channel_id(config)
     configured_punishment_log_channel_id = config.get("punishment_log_channel_id")
+
+    health = _setup_health_check(guild, config)
+    all_ok = health.startswith("✅")
     embed = make_embed(
         "Server Configuration",
-        "> Use the panels below to configure roles, channels, and guild-wide settings.",
-        kind="warning",
+        f"> Use the panels below to configure roles, channels, and guild-wide settings.\n\n{health}",
+        kind="success" if all_ok else "warning",
         scope=SCOPE_SYSTEM,
         guild=guild,
     )
@@ -3487,6 +3583,7 @@ async def execute_punishment(interaction, target, moderator, reason, minutes, no
     timestamp_iso = now_iso()
 
     # DM User
+    dm_delivered = False
     try:
         if is_kick:
             action_verb = "Kicked"
@@ -3508,19 +3605,20 @@ async def execute_punishment(interaction, target, moderator, reason, minutes, no
         dm_embed.add_field(name="Reason", value=format_reason_value(reason, limit=1000), inline=False)
         if user_msg:
             dm_embed.add_field(name="Moderator Message", value=format_log_quote(user_msg, limit=1024), inline=False)
-        
+
         if punishment_type == "timeout":
             dm_embed.add_field(name="Duration", value=format_duration(minutes), inline=True)
             unmute_dt = discord.utils.utcnow() + get_valid_duration(minutes if minutes > 0 else 0)
             dm_embed.add_field(name="Expires", value=discord.utils.format_dt(unmute_dt, "R"), inline=True)
         elif is_ban and minutes == -1:
             dm_embed.add_field(name="Duration", value="Ban", inline=True)
-        
+
         if interaction.guild.icon:
             dm_embed.set_thumbnail(url=interaction.guild.icon.url)
-        
+
         view = AppealView(interaction.guild.id, target.id, moderator.id, minutes, timestamp_iso, reason)
         await target.send(embed=dm_embed, view=view)
+        dm_delivered = True
     except discord.Forbidden:
         pass
 
@@ -3535,7 +3633,8 @@ async def execute_punishment(interaction, target, moderator, reason, minutes, no
         "user_msg": user_msg,
         "target_name": get_user_display_name(target),
         "type": punishment_type,
-        "active": is_ban
+        "active": is_ban,
+        "dm_delivered": dm_delivered,
     }
     record = await bot.data_manager.add_punishment(uid, record, persist=False)
     case_label = get_case_label(record, len(history) + 1)
@@ -4122,7 +4221,7 @@ class AppealModal(discord.ui.Modal, title="Appeal Punishment"):
             
         await interaction.response.send_message("Your appeal has been sent to the staff team.", ephemeral=True)
 
-class AppealView(discord.ui.View):
+class AppealView(ExpirableMixin, discord.ui.View):
     def __init__(self, guild_id: int, target_id: int, moderator_id: int, duration: int, timestamp: str, reason: str):
         super().__init__(timeout=None)
         self.guild_id = guild_id
@@ -4834,14 +4933,21 @@ class PunishSelect(discord.ui.Select):
         self.public = public
         self.reaction_count = reaction_count
         rules_config = bot.data_manager.config.get("punishment_rules", DEFAULT_RULES)
+        user_history = bot.data_manager.punishments.get(str(target.id), [])
         options = []
         for reason, rules in rules_config.items():
-            base_str = format_duration(rules['base'])
-            esc_str = format_duration(rules['escalated'])
-            if rules['base'] == 0:
-                desc = f"1st: Warning • Repeat: {esc_str}"
+            predicted_minutes, will_escalate, _ = calculate_smart_punishment(
+                str(target.id), reason, rules, user_history
+            )
+            predicted_str = format_duration(predicted_minutes)
+            base_str = format_duration(rules["base"])
+            esc_str = format_duration(rules["escalated"])
+            if will_escalate:
+                desc = truncate_text(f"⬆ Escalated → {predicted_str}  (base: {base_str})", 100)
+            elif rules["base"] == 0:
+                desc = truncate_text(f"1st offense: Warning  •  Repeat: {esc_str}", 100)
             else:
-                desc = f"Base: {base_str} • Repeat: {esc_str}"
+                desc = truncate_text(f"Will apply: {predicted_str}  (escalated: {esc_str})", 100)
             options.append(discord.SelectOption(label=reason, description=desc))
         options.append(discord.SelectOption(label="Custom Punishment", value="custom", description="Define custom reason and duration"))
         super().__init__(placeholder="Select a punishment reason...", min_values=1, max_values=1, options=options)
@@ -5122,7 +5228,7 @@ class HistoryClearConfirmView(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="Clear history canceled.", embed=None, view=None)
 
-class HistoryView(discord.ui.View):
+class HistoryView(ExpirableMixin, discord.ui.View):
     def __init__(self, user: discord.Member, *, mode: str = "history", selected_case_id: Optional[int] = None, initial_undo_reason: Optional[str] = None):
         super().__init__(timeout=300)
         self.user = user
@@ -5544,7 +5650,7 @@ class CaseSwitchSelect(discord.ui.Select):
         await interaction.response.edit_message(embed=self.panel.build_embed(), view=self.panel)
 
 
-class CasePanelView(discord.ui.View):
+class CasePanelView(ExpirableMixin, discord.ui.View):
     def __init__(self, target_user_id: str, case_ids: List[int], target_user: Optional[Union[discord.Member, discord.User]] = None):
         super().__init__(timeout=300)
         self.target_user_id = target_user_id
@@ -5677,7 +5783,7 @@ class FirstConfirmClear(discord.ui.View):
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.edit_message(content="Clear history canceled.", view=None)
 
-class PunishView(discord.ui.View):
+class PunishView(ExpirableMixin, discord.ui.View):
     def __init__(self, target, moderator, public=False, reaction_count=None):
         super().__init__(timeout=60)
         self.target = target
@@ -5814,7 +5920,7 @@ class ActiveSelect(discord.ui.Select):
 
         await interaction.response.edit_message(embed=embed, view=self.view)
 
-class ActiveView(discord.ui.View):
+class ActiveView(ExpirableMixin, discord.ui.View):
     def __init__(self, active_list):
         super().__init__(timeout=180)
         self.add_item(ActiveSelect(active_list))
@@ -7780,7 +7886,7 @@ class FeatureFlagSelect(discord.ui.Select):
         await interaction.response.edit_message(embed=build_feature_flags_embed(interaction.guild), view=FeatureFlagView())
 
 
-class FeatureFlagView(discord.ui.View):
+class FeatureFlagView(ExpirableMixin, discord.ui.View):
     def __init__(self):
         super().__init__(timeout=180)
         self.add_item(FeatureFlagSelect())
@@ -9088,7 +9194,7 @@ class ConfigDashboardActionSelect(discord.ui.Select):
             await interaction.response.send_message(embed=build_canned_replies_embed(interaction.guild), view=CannedRepliesView(), ephemeral=True)
 
 
-class ConfigDashboardView(discord.ui.View):
+class ConfigDashboardView(ExpirableMixin, discord.ui.View):
     def __init__(self):
         super().__init__(timeout=180)
         self.add_item(ConfigDashboardActionSelect())
@@ -9149,7 +9255,7 @@ class SetupDashboardActionSelect(discord.ui.Select):
             await interaction.response.send_message(embed=build_setup_validation_embed(interaction.guild, findings), ephemeral=True)
 
 
-class SetupDashboardView(discord.ui.View):
+class SetupDashboardView(ExpirableMixin, discord.ui.View):
     def __init__(self):
         super().__init__(timeout=180)
         self.add_item(ConfigTypeSelect("roles", row=0))
@@ -9248,7 +9354,8 @@ async def show_punish_menu(interaction: discord.Interaction, user: discord.User,
     await interaction.response.defer(ephemeral=True)
     embed = build_punish_embed(user)
     view = PunishView(user, interaction.user, public=public, reaction_count=reaction_count)
-    await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    msg = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    view.message = msg
 
 async def show_history_menu(
     interaction: discord.Interaction,
