@@ -1215,7 +1215,7 @@ async def send_modmail_panel_message(
     is_dm_panel = in_dm or isinstance(destination, (discord.User, discord.Member, discord.DMChannel))
     embed = build_modmail_panel_embed(guild, in_dm=is_dm_panel)
     branding = _get_branding_config(guild.id)
-    panel_banner_url = branding.get("modmail_banner_url") or MODMAIL_PANEL_BANNER_URL
+    panel_banner_url = MODMAIL_PANEL_BANNER_URL
     if intro:
         note_value = str(intro).strip()
         if note_value and not note_value.lstrip().startswith((">", "-", "*")):
@@ -2018,7 +2018,7 @@ def build_modmail_panel_embed(guild: discord.Guild, *, in_dm: bool = False) -> d
             branding = bot.data_manager._configs.get(guild.id, {}).get("_branding", {})
         except Exception:
             pass
-    banner_url = branding.get("modmail_banner_url") or MODMAIL_PANEL_BANNER_URL
+    banner_url = MODMAIL_PANEL_BANNER_URL
     categories = branding.get("modmail_categories") or MODMAIL_PANEL_CATEGORIES
 
     description = (
@@ -10128,7 +10128,6 @@ def _build_branding_panel_embed(guild: discord.Guild) -> discord.Embed:
     embed.add_field(name="Profile Bio", value=_format_branding_panel_value(bio_status), inline=True)
     embed.add_field(name="Profile Avatar", value=_format_branding_panel_value(avatar_status), inline=True)
     embed.add_field(name="Profile Banner", value=_format_branding_panel_value(banner_status), inline=True)
-    embed.add_field(name="Modmail Banner", value=_format_branding_panel_value(branding.get("modmail_banner_url")), inline=False)
     embed.add_field(name="Footer Preview", value=_format_branding_panel_value(_build_footer_text(SCOPE_SYSTEM, guild)), inline=True)
     embed.add_field(name="Footer Icon", value=_format_branding_panel_value(footer_icon_status), inline=True)
     embed.add_field(
@@ -10254,25 +10253,6 @@ class BrandingBioModal(discord.ui.Modal, title="Set Profile Bio"):
         await _refresh_branding_panel(interaction)
 
 
-class BrandingModmailBannerModal(discord.ui.Modal, title="Set Modmail Banner URL"):
-    banner_url = discord.ui.TextInput(
-        label="HTTPS URL for modmail banner",
-        placeholder="https://cdn.discordapp.com/...",
-        required=False,
-        max_length=500,
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        banner_url = self.banner_url.value.strip()
-        if banner_url:
-            _payload, error = await fetch_image_bytes(banner_url, max_bytes=PROFILE_BRANDING_MAX_BYTES)
-            if error:
-                await interaction.response.send_message(embed=build_branding_error_embed(interaction.guild, error), ephemeral=True)
-                return
-        await save_branding_settings(interaction.guild_id, {"modmail_banner_url": banner_url or None})
-        await _refresh_branding_panel(interaction)
-
-
 class BrandingPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=300)
@@ -10296,10 +10276,6 @@ class BrandingPanelView(discord.ui.View):
     @discord.ui.button(label="Profile Bio", style=discord.ButtonStyle.secondary, row=1)
     async def set_bio(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BrandingBioModal())
-
-    @discord.ui.button(label="Modmail Banner", style=discord.ButtonStyle.secondary, row=1)
-    async def set_modmail_banner(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.send_modal(BrandingModmailBannerModal())
 
     @discord.ui.button(label="Reset All", style=discord.ButtonStyle.danger, row=2)
     async def reset_branding(self, interaction: discord.Interaction, button: discord.ui.Button):
