@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from datetime import timedelta
@@ -187,7 +188,8 @@ class MGXBot(commands.Bot):
         if rejected:
             reason = "blacklisted" if guild.id in blacklisted else "not in the whitelist"
             logger.warning("Leaving guild %s (%s) — %s", guild.name, guild.id, reason)
-            for oid in BOT_OWNER_IDS:
+
+            async def _notify_owner(oid: int) -> None:
                 try:
                     owner = await self.fetch_user(oid)
                     await owner.send(
@@ -197,6 +199,8 @@ class MGXBot(commands.Bot):
                     )
                 except Exception:
                     pass
+
+            await asyncio.gather(*(_notify_owner(oid) for oid in BOT_OWNER_IDS))
             await guild.leave()
             return
 
@@ -206,13 +210,14 @@ class MGXBot(commands.Bot):
         # Commands are already global — no per-guild sync needed.
         # Global sync was done on startup; new guilds automatically receive global commands.
 
-        try:
-            await guild.owner.send(
-                f"Thanks for adding **{self.user.name}** to **{guild.name}**!\n"
-                f"Use `/setup` to configure the bot for your server."
-            )
-        except Exception:
-            pass
+        if guild.owner:
+            try:
+                await guild.owner.send(
+                    f"Thanks for adding **{self.user.name}** to **{guild.name}**!\n"
+                    f"Use `/setup` to configure the bot for your server."
+                )
+            except Exception:
+                pass
 
     async def _on_guild_remove(self, guild: discord.Guild) -> None:
         if self.data_manager:

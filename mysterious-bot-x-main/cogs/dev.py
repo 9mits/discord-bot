@@ -18,10 +18,34 @@ from discord import app_commands
 from discord.ext import commands
 
 from modules.mbx_constants import BOT_OWNER_IDS, DEV_GUILD_ID
+from modules.mbx_utils import truncate_text
 
 logger = logging.getLogger("MGXBot")
 
 _DEV_GUILD = discord.Object(id=DEV_GUILD_ID) if DEV_GUILD_ID else None
+
+
+async def _parse_guild_id(interaction: discord.Interaction, guild_id: str) -> Optional[int]:
+    """Parse guild_id string to int, sending an ephemeral error and returning None on failure."""
+    try:
+        return int(guild_id)
+    except ValueError:
+        await interaction.followup.send("Invalid guild ID.", ephemeral=True)
+        return None
+
+
+def _chunk_lines(lines: list[str], limit: int = 1900) -> list[str]:
+    chunks: list[str] = []
+    current = ""
+    for line in lines:
+        if len(current) + len(line) + 1 > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = f"{current}\n{line}".strip()
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 class DevCog(commands.Cog):
@@ -29,7 +53,6 @@ class DevCog(commands.Cog):
         self.bot = bot
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Silently ignore — no error message sent to non-owners
         return interaction.user.id in BOT_OWNER_IDS
 
     # ------------------------------------------------------------------ #
@@ -81,30 +104,16 @@ class DevCog(commands.Cog):
             await interaction.followup.send("No active guilds in the database.", ephemeral=True)
             return
 
-        # Chunk into ≤1900-char messages
-        chunks: list[str] = []
-        current = ""
-        for line in lines:
-            if len(current) + len(line) + 1 > 1900:
-                chunks.append(current)
-                current = line
-            else:
-                current = f"{current}\n{line}".strip()
-        if current:
-            chunks.append(current)
-
-        await interaction.followup.send(chunks[0], ephemeral=True)
-        for chunk in chunks[1:]:
+        chunks = _chunk_lines(lines)
+        for chunk in chunks:
             await interaction.followup.send(chunk, ephemeral=True)
 
     @dev.command(name="leave", description="Force the bot to leave a guild and archive its data")
     @app_commands.describe(guild_id="Guild ID to leave")
     async def dev_leave(self, interaction: discord.Interaction, guild_id: str) -> None:
         await interaction.response.defer(ephemeral=True)
-        try:
-            gid = int(guild_id)
-        except ValueError:
-            await interaction.followup.send("Invalid guild ID.", ephemeral=True)
+        gid = await _parse_guild_id(interaction, guild_id)
+        if gid is None:
             return
 
         guild = self.bot.get_guild(gid)
@@ -120,10 +129,8 @@ class DevCog(commands.Cog):
     @app_commands.describe(guild_id="Guild ID to blacklist")
     async def dev_blacklist(self, interaction: discord.Interaction, guild_id: str) -> None:
         await interaction.response.defer(ephemeral=True)
-        try:
-            gid = int(guild_id)
-        except ValueError:
-            await interaction.followup.send("Invalid guild ID.", ephemeral=True)
+        gid = await _parse_guild_id(interaction, guild_id)
+        if gid is None:
             return
 
         dm = self.bot.data_manager
@@ -142,10 +149,8 @@ class DevCog(commands.Cog):
     @app_commands.describe(guild_id="Guild ID to unblacklist")
     async def dev_unblacklist(self, interaction: discord.Interaction, guild_id: str) -> None:
         await interaction.response.defer(ephemeral=True)
-        try:
-            gid = int(guild_id)
-        except ValueError:
-            await interaction.followup.send("Invalid guild ID.", ephemeral=True)
+        gid = await _parse_guild_id(interaction, guild_id)
+        if gid is None:
             return
 
         if self.bot.data_manager:
@@ -179,7 +184,10 @@ class DevCog(commands.Cog):
             if not ch:
                 continue
             try:
-                await ch.send(f"**[Developer Broadcast]** {message}")
+                await ch.send(
+                    f"**[Developer Broadcast]** {message}",
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
                 sent += 1
             except Exception:
                 failed += 1
@@ -192,17 +200,13 @@ class DevCog(commands.Cog):
     @app_commands.describe(guild_id="Guild ID to inspect")
     async def dev_guildconfig(self, interaction: discord.Interaction, guild_id: str) -> None:
         await interaction.response.defer(ephemeral=True)
-        try:
-            gid = int(guild_id)
-        except ValueError:
-            await interaction.followup.send("Invalid guild ID.", ephemeral=True)
+        gid = await _parse_guild_id(interaction, guild_id)
+        if gid is None:
             return
 
         dm = self.bot.data_manager
         cfg = dm._configs.get(gid, {}) if dm else {}
-        text = json.dumps(cfg, indent=2, default=str)
-        if len(text) > 1900:
-            text = text[:1900] + "\n…(truncated)"
+        text = truncate_text(json.dumps(cfg, indent=2, default=str), 1900)
         await interaction.followup.send(f"```json\n{text}\n```", ephemeral=True)
 
     @dev.command(name="stats", description="Bot-wide statistics across all guilds")
@@ -240,7 +244,6 @@ async def setup(bot: commands.Bot) -> None:
     cog = DevCog(bot)
     await bot.add_cog(cog)
     if DEV_GUILD_ID:
-        # Register /dev group scoped to the dev guild only
         bot.tree.add_command(cog.dev, guild=_DEV_GUILD, override=True)
         logger.info("DevCog loaded — /dev synced to guild %s", DEV_GUILD_ID)
     else:

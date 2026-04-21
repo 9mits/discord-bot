@@ -80,7 +80,7 @@ from modules.mbx_services import (
     validate_guild_configuration,
 )
 from modules.mbx_context import abuse_system, bot, tree
-from modules.mbx_utils import iso_to_dt, now_iso, parse_duration_str
+from modules.mbx_utils import iso_to_dt, now_iso, parse_duration_str, truncate_text
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -965,14 +965,12 @@ def _format_branding_panel_value(
     clean = str(value or "").strip()
     if not clean:
         return f"`{empty}`"
-    if len(clean) > limit:
-        clean = f"{clean[:limit]}..."
-    return f"`{clean}`"
+    return f"`{truncate_text(clean, limit)}`"
 
 
 async def _refresh_branding_panel(interaction: discord.Interaction) -> None:
     embed = _build_branding_panel_embed(interaction.guild)
-    await interaction.response.edit_message(embed=embed)
+    await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
 
 
 async def apply_guild_member_branding(
