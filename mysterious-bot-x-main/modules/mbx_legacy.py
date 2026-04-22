@@ -26,18 +26,11 @@ from discord.http import Route
 from modules.mbx_constants import (
     BRAND_NAME,
     COOLDOWN_SECONDS,
-    DEFAULT_ANCHOR_ROLE_ID,
     DEFAULT_ARCHIVE_CAT_ID,
-    DEFAULT_GUILD_ID,
     DEFAULT_MAX_UNREAD_PINGS,
     DEFAULT_MESSAGE_CACHE_LIMIT,
     DEFAULT_MESSAGE_CACHE_RETENTION_DAYS,
-    DEFAULT_ROLE_ADMIN,
-    DEFAULT_ROLE_COMMUNITY_MANAGER,
-    DEFAULT_ROLE_MOD,
-    DEFAULT_ROLE_OWNER,
     DEFAULT_RULES,
-    DEFAULT_SPAM_ROLE_ID,
     EMBED_PALETTE,
     FEATURE_FLAG_LABELS,
     HOLO_PRIMARY,
@@ -919,12 +912,14 @@ async def respond_with_error(interaction: discord.Interaction, message: str, *, 
 def is_staff_member(member: discord.Member) -> bool:
     conf = bot.data_manager.config
     allowed = {
-        conf.get("role_mod", DEFAULT_ROLE_MOD),
-        conf.get("role_admin", DEFAULT_ROLE_ADMIN),
-        conf.get("role_owner", DEFAULT_ROLE_OWNER),
-        conf.get("role_community_manager", DEFAULT_ROLE_COMMUNITY_MANAGER),
+        r for r in (
+            conf.get("role_mod"),
+            conf.get("role_admin"),
+            conf.get("role_owner"),
+            conf.get("role_community_manager"),
+        ) if r
     }
-    if any(role.id in allowed for role in member.roles):
+    if allowed and any(role.id in allowed for role in member.roles):
         return True
     mod_roles = bot.data_manager.config.get("mod_roles", [])
     if any(role.id in mod_roles for role in member.roles):
@@ -1251,14 +1246,13 @@ def extract_snowflake_id(raw_value: str) -> Optional[int]:
 
 
 def get_primary_guild() -> Optional[discord.Guild]:
+    """Return the guild that owns the current data_manager context, if any."""
     if not getattr(bot, "data_manager", None):
-        return bot.guilds[0] if bot.guilds else None
-    guild_id = bot.data_manager.config.get("guild_id", DEFAULT_GUILD_ID)
+        return None
+    guild_id = bot.data_manager._current_guild_id
     if guild_id:
-        guild = bot.get_guild(int(guild_id))
-        if guild:
-            return guild
-    return bot.guilds[0] if bot.guilds else None
+        return bot.get_guild(int(guild_id))
+    return None
 
 
 def get_context_guild(interaction: discord.Interaction) -> Optional[discord.Guild]:
@@ -1294,16 +1288,18 @@ async def send_modmail_panel_message(
 
 
 async def maybe_send_dm_modmail_panel(user: discord.User, *, guild: Optional[discord.Guild] = None, force: bool = False, intro: Optional[str] = None) -> bool:
-    if not get_feature_flag(bot.data_manager.config, "dm_modmail_prompt", True):
-        return False
-
     guild = guild or get_primary_guild()
     if guild is None:
         return False
 
-    cooldown_minutes = max(1, int(bot.data_manager.config.get("dm_modmail_panel_cooldown_minutes", 30) or 30))
+    if not get_feature_flag(bot.data_manager._configs.get(guild.id, {}), "dm_modmail_prompt", True):
+        return False
+
+    cooldown_minutes = max(1, int(bot.data_manager._configs.get(guild.id, {}).get("dm_modmail_panel_cooldown_minutes", 30) or 30))
     now_ts = time.time()
-    last_sent = bot.dm_modmail_prompt_cooldowns.get(user.id, 0.0)
+    # Cooldown keyed per (guild_id, user_id) so multi-server prompts don't suppress each other
+    cooldown_key = (guild.id, user.id)
+    last_sent = bot.dm_modmail_prompt_cooldowns.get(cooldown_key, 0.0)
     if not force and last_sent and now_ts - last_sent < cooldown_minutes * 60:
         return False
 
@@ -1316,7 +1312,7 @@ async def maybe_send_dm_modmail_panel(user: discord.User, *, guild: Optional[dis
         logger.warning("Failed to send DM modmail panel to %s: %s", user.id, exc)
         return False
 
-    bot.dm_modmail_prompt_cooldowns[user.id] = now_ts
+    bot.dm_modmail_prompt_cooldowns[cooldown_key] = now_ts
     return True
 
 
@@ -3101,10 +3097,11 @@ async def punish_rogue_mod(guild: discord.Guild, member: discord.User, reason: s
         restore_data["actor_id"] = member.id
         view = AntiNukeResolveView(restore_data)
         
-    # Dynamic pings
-    r_admin = bot.data_manager.config.get("role_admin", DEFAULT_ROLE_ADMIN)
-    r_owner = bot.data_manager.config.get("role_owner", DEFAULT_ROLE_OWNER)
-    pings = f"<@&{r_admin}> <@&{r_owner}>"
+    # Dynamic pings — only include roles that are actually configured for this guild
+    r_admin = bot.data_manager.config.get("role_admin")
+    r_owner = bot.data_manager.config.get("role_owner")
+    ping_parts = [f"<@&{r}>" for r in (r_admin, r_owner) if r]
+    pings = " ".join(ping_parts) if ping_parts else None
     
     await send_log(guild, embed, content=pings, view=view)
 
@@ -3848,8 +3845,8 @@ class CreateRoleModal(discord.ui.Modal, title="Create your custom role"):
             await interaction.followup.send(f"Failed to create role: {e}", ephemeral=True)
             return
 
-        anchor_id = bot.data_manager.config.get("role_anchor", DEFAULT_ANCHOR_ROLE_ID)
-        anchor = guild.get_role(anchor_id)
+        anchor_id = bot.data_manager.config.get("role_anchor")
+        anchor = guild.get_role(anchor_id) if anchor_id else None
         if not anchor:
             try: anchor = await guild.fetch_role(anchor_id)
             except Exception: pass
@@ -6748,8 +6745,8 @@ class AntiNukeResolveView(discord.ui.View):
 
     @discord.ui.button(label="Resolve", style=discord.ButtonStyle.success)
     async def resolve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        owner_role = bot.data_manager.config.get("role_owner", DEFAULT_ROLE_OWNER)
-        if not any(r.id == owner_role for r in interaction.user.roles):
+        owner_role = bot.data_manager.config.get("role_owner")
+        if not owner_role or not any(r.id == owner_role for r in interaction.user.roles):
             await interaction.response.send_message("Only the Owner can use this.", ephemeral=True)
             return
         
@@ -6883,17 +6880,20 @@ async def resolve_modmail_user(user_id: Union[str, int, None]) -> Optional[disco
 
 
 async def resolve_modmail_thread(guild: Optional[discord.Guild], ticket: Optional[dict]) -> Optional[discord.Thread]:
-    if guild is None or not isinstance(ticket, dict):
+    if not isinstance(ticket, dict):
         return None
 
     thread_id = _parse_user_id(ticket.get("thread_id"))
     if thread_id is None:
         return None
 
-    candidate = guild.get_thread(thread_id) or guild.get_channel_or_thread(thread_id)
-    if isinstance(candidate, discord.Thread):
-        return candidate
+    # Try guild cache first if guild is available
+    if guild is not None:
+        candidate = guild.get_thread(thread_id) or guild.get_channel_or_thread(thread_id)
+        if isinstance(candidate, discord.Thread):
+            return candidate
 
+    # Fall back to a global fetch — works without knowing the guild
     try:
         fetched = await bot.fetch_channel(thread_id)
     except (discord.NotFound, discord.Forbidden, discord.HTTPException):
@@ -7340,10 +7340,12 @@ class ModmailModal(discord.ui.Modal):
             if ping_roles:
                 pings = " ".join([f"<@&{rid}>" for rid in ping_roles])
             else:
-                r_mod = bot.data_manager.config.get("role_mod", DEFAULT_ROLE_MOD)
-                r_admin = bot.data_manager.config.get("role_admin", DEFAULT_ROLE_ADMIN)
-                r_cm = bot.data_manager.config.get("role_community_manager", DEFAULT_ROLE_COMMUNITY_MANAGER)
-                pings = f"<@&{r_mod}> <@&{r_admin}> <@&{r_cm}>"
+                # Fall back to configured staff roles — only mention roles set for this guild
+                r_mod = bot.data_manager.config.get("role_mod")
+                r_admin = bot.data_manager.config.get("role_admin")
+                r_cm = bot.data_manager.config.get("role_community_manager")
+                ping_parts = [f"<@&{r}>" for r in (r_mod, r_admin, r_cm) if r]
+                pings = " ".join(ping_parts) if ping_parts else None
 
             log_msg = await log_channel.send(content=f"New Ticket from {interaction.user.mention} {pings}", embed=embed, view=view)
             thread = await log_msg.create_thread(name=f"ticket-{interaction.user.name}")
@@ -9200,27 +9202,10 @@ class ConfigDashboardView(ExpirableMixin, discord.ui.View):
         self.add_item(ConfigDashboardActionSelect())
 
 
-class GuildIdModal(discord.ui.Modal, title="Set Guild ID"):
-    guild_id = discord.ui.TextInput(label="Guild ID", max_length=25)
-
-    def __init__(self, current_guild_id: int):
-        super().__init__()
-        self.guild_id.default = str(current_guild_id)
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not self.guild_id.value.isdigit():
-            await interaction.response.send_message("Invalid ID.", ephemeral=True)
-            return
-        bot.data_manager.config["guild_id"] = int(self.guild_id.value)
-        await bot.data_manager.save_config()
-        await interaction.response.send_message(f"Guild ID set to `{self.guild_id.value}`.", ephemeral=True)
-
-
 class SetupDashboardActionSelect(discord.ui.Select):
     def __init__(self):
         options = [
             discord.SelectOption(label="Modmail Settings", value="modmail", description="Open the modmail behavior controls."),
-            discord.SelectOption(label="Set Guild ID", value="guild_id", description="Change the guild ID used by the bot."),
             discord.SelectOption(label="Validate Setup", value="validate", description="Run the configuration validation checks."),
         ]
         super().__init__(
@@ -9239,9 +9224,6 @@ class SetupDashboardActionSelect(discord.ui.Select):
                 view=ModmailSettingsView(),
                 ephemeral=True,
             )
-            return
-        if action == "guild_id":
-            await interaction.response.send_modal(GuildIdModal(interaction.guild.id))
             return
         if action == "validate":
             if not get_feature_flag(bot.data_manager.config, "setup_validation", True):
@@ -9280,26 +9262,79 @@ def requires_setup(interaction: discord.Interaction) -> bool:
         raise app_commands.CheckFailure("guild_not_configured")
     return True
 
-@tree.command(name="listcommands", description="List all available commands | admin/owner")
+_CMD_CATEGORIES = {
+    "Moderation":  {"mod", "punish", "history", "case", "active", "undopunish", "clear", "lock", "unlock"},
+    "Modmail":     {"modmail"},
+    "AutoMod":     {"automod"},
+    "Roles":       {"role", "role-manage", "role-settings", "role-help"},
+    "System":      {"setup", "config", "rules", "branding", "access", "safety", "archive", "unarchive",
+                    "clone", "lockdown", "unlockdown", "status", "stats", "directory", "listcommands",
+                    "publicpunish", "internals"},
+}
+
+
+def _categorise_commands() -> dict[str, list[str]]:
+    buckets: dict[str, list[str]] = {cat: [] for cat in _CMD_CATEGORIES}
+    buckets["Other"] = []
+    for cmd in bot.tree.walk_commands():
+        matched = False
+        for cat, names in _CMD_CATEGORIES.items():
+            if cmd.qualified_name.split(" ")[0] in names:
+                buckets[cat].append(f"`/{cmd.qualified_name}` — {cmd.description}")
+                matched = True
+                break
+        if not matched:
+            buckets["Other"].append(f"`/{cmd.qualified_name}` — {cmd.description}")
+    return {k: v for k, v in buckets.items() if v}
+
+
+class CommandCategorySelect(discord.ui.Select):
+    def __init__(self, guild: Optional[discord.Guild]):
+        self.guild = guild
+        self._buckets = _categorise_commands()
+        options = [
+            discord.SelectOption(label=cat, description=f"{len(cmds)} command(s)", value=cat)
+            for cat, cmds in self._buckets.items()
+        ]
+        super().__init__(placeholder="Browse a command category…", options=options[:25])
+
+    async def callback(self, interaction: discord.Interaction):
+        cat = self.values[0]
+        lines = self._buckets.get(cat, [])
+        embed = make_embed(
+            f"Commands — {cat}",
+            "\n".join(lines) or "> No commands.",
+            kind="info",
+            scope=SCOPE_SYSTEM,
+            guild=self.guild,
+        )
+        await interaction.response.edit_message(embed=embed, view=self.view)
+
+
+class CommandBrowserView(ExpirableMixin, discord.ui.View):
+    def __init__(self, guild: Optional[discord.Guild]):
+        super().__init__(timeout=120)
+        self.add_item(CommandCategorySelect(guild))
+
+
+@tree.command(name="listcommands", description="Browse all available commands by category | admin/owner")
 @app_commands.default_permissions(administrator=True)
 @app_commands.check(check_admin)
 async def list_commands(interaction: discord.Interaction):
-        
+    buckets = _categorise_commands()
     embed = make_embed(
-        "System Command Registry",
-        "> Registered application commands available to this bot instance.",
-        kind="warning",
+        "Command Registry",
+        f"> **{sum(len(v) for v in buckets.values())} command(s)** across {len(buckets)} categories.\n"
+        "> Use the dropdown below to browse each category.",
+        kind="info",
         scope=SCOPE_SYSTEM,
         guild=interaction.guild,
     )
-    cmds = []
-    for cmd in bot.tree.walk_commands():
-        cmds.append(f"**/{cmd.name}**: {cmd.description}")
-    
-    desc = "\n".join(cmds)
-    if len(desc) > 4000: desc = desc[:4000] + "..."
-    embed.description = desc or "> No commands were found."
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    for cat, lines in buckets.items():
+        embed.add_field(name=cat, value=f"{len(lines)} command(s)", inline=True)
+    view = CommandBrowserView(interaction.guild)
+    msg = await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    view.message = msg
 
 class RevokeUndoView(discord.ui.View):
     def __init__(self, target_id: int, record: dict, actor_id: int):
@@ -9343,7 +9378,7 @@ class RevokeUndoView(discord.ui.View):
             action_taken += f" (Physical action failed: {e})"
 
         embed = interaction.message.embeds[0]
-        embed.color = discord.Color.orange()
+        embed.color = EMBED_PALETTE["warning"]
         embed.add_field(name="Update", value=f"> **Undo Revoked** by {interaction.user.mention}\n> {action_taken}", inline=False)
         
         button.disabled = True
@@ -11336,7 +11371,7 @@ async def on_message(message: discord.Message):
     has_everyone = message.mention_everyone
     
     # Specific Role ID
-    target_role_id = bot.data_manager.config.get("role_mention_spam_target", DEFAULT_SPAM_ROLE_ID)
+    target_role_id = bot.data_manager.config.get("role_mention_spam_target")
     has_role = any(r.id == target_role_id for r in message.role_mentions)
     
     if (has_everyone or has_role) and not is_immune:
@@ -11387,12 +11422,13 @@ async def on_message(message: discord.Message):
     # Modmail Logic
     # 1. User -> Bot (DM)
     if isinstance(message.channel, discord.DMChannel):
-        guild = get_primary_guild()
         ticket = bot.data_manager.modmail.get(str(message.author.id))
         if ticket and ticket.get("status") == "open":
-            thread = await resolve_modmail_thread(guild, ticket)
+            # Resolve thread without assuming a primary guild — derive guild from thread itself
+            thread = await resolve_modmail_thread(None, ticket)
 
             if thread:
+                guild = thread.guild
                 content = message.content if message.content else None
                 embed = make_embed(
                     "User Reply",
@@ -11414,8 +11450,7 @@ async def on_message(message: discord.Message):
                     ticket["last_user_message_at"] = now_iso()
                     ticket["last_sla_alert_at"] = None
                     await bot.data_manager.save_modmail()
-                    if guild:
-                        await refresh_modmail_ticket_log(guild, str(message.author.id))
+                    await refresh_modmail_ticket_log(guild, str(message.author.id))
                     if attachment_notice:
                         await message.channel.send(attachment_notice)
                 except Exception as e:
@@ -11424,7 +11459,6 @@ async def on_message(message: discord.Message):
                 await message.channel.send("Your previous ticket thread could not be found, so please open a new ticket below.")
                 await maybe_send_dm_modmail_panel(
                     message.author,
-                    guild=guild,
                     force=True,
                     intro="> Your old ticket could not be found. Please open a new ticket below so staff can help you again.",
                 )
