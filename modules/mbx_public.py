@@ -53,12 +53,6 @@ from modules.mbx_utils import *
 logger = logging.getLogger("MGXBot")
 
 
-def _legacy_value(name: str):
-    from modules import mbx_legacy
-
-    return getattr(mbx_legacy, name)
-
-
 def AppealView(*args, **kwargs):
     from ui.moderation import AppealView as view_cls
 

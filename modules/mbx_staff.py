@@ -53,12 +53,6 @@ from modules.mbx_utils import *
 logger = logging.getLogger("MGXBot")
 
 
-def _legacy_value(name: str):
-    from modules import mbx_legacy
-
-    return getattr(mbx_legacy, name)
-
-
 async def log_case_management_action(
     guild: discord.Guild,
     actor: discord.Member,
@@ -98,10 +92,10 @@ def get_mod_cases(mod_id: str) -> list:
 
 def get_staff_stats_embed(target: discord.Member, cases: list, reversals: int) -> discord.Embed:
     total = len(cases)
-    
+
     # Sort cases by timestamp (newest first) for calculations
     sorted_cases = sorted(cases, key=lambda x: x[1].get("timestamp", ""), reverse=True)
-    
+
     action_counter = Counter()
     reasons = Counter()
     timestamps = []
@@ -144,13 +138,13 @@ def get_staff_stats_embed(target: discord.Member, cases: list, reversals: int) -
     # Activity Overview
     first_action = timestamps[-1] if timestamps else None
     last_action = timestamps[0] if timestamps else None
-    
+
     days_active = (last_action - first_action).days if (first_action and last_action) else 0
     days_active = max(1, days_active)
-    
+
     avg_daily = round(total / days_active, 2) if total > 0 else 0
     reversal_rate = round((reversals / total) * 100, 1) if total > 0 else 0
-    
+
     overview = (
         f"**Total Actions:** `{total}`\n"
         f"**Reversals:** `{reversals}` ({reversal_rate}%)\n"
@@ -165,7 +159,7 @@ def get_staff_stats_embed(target: discord.Member, cases: list, reversals: int) -
     last_24h = sum(1 for t in timestamps if (now - t).days < 1)
     last_7d = sum(1 for t in timestamps if (now - t).days < 7)
     last_30d = sum(1 for t in timestamps if (now - t).days < 30)
-    
+
     recent = (
         f"**24 Hours:** `{last_24h}`\n"
         f"**7 Days:** `{last_7d}`\n"
@@ -181,7 +175,7 @@ def get_staff_stats_embed(target: discord.Member, cases: list, reversals: int) -
         p_bans = bans / total
         p_to = timeouts / total
         p_warn = warns / total
-        
+
         dist_desc = (
             f"**Bans** ({bans})\n`{create_progress_bar(p_bans)}` {round(p_bans*100)}%\n"
             f"**Timeouts** ({timeouts})\n`{create_progress_bar(p_to)}` {round(p_to*100)}%\n"

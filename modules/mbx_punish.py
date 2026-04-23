@@ -33,15 +33,15 @@ def get_valid_duration(minutes: int) -> timedelta:
 
 
 async def handle_abuse(*args, **kwargs):
-    from modules.mbx_legacy import handle_abuse as legacy_handle_abuse
+    from modules.mbx_automod import handle_abuse as automod_handle_abuse
 
-    return await legacy_handle_abuse(*args, **kwargs)
+    return await automod_handle_abuse(*args, **kwargs)
 
 
 def AppealView(*args, **kwargs):
-    from modules.mbx_legacy import AppealView as legacy_appeal_view
+    from ui.moderation import AppealView as appeal_view
 
-    return legacy_appeal_view(*args, **kwargs)
+    return appeal_view(*args, **kwargs)
 
 
 async def execute_punishment(interaction, target, moderator, reason, minutes, note, user_msg, is_escalated, origin_message=None, punishment_type="auto", public=False):
@@ -49,7 +49,7 @@ async def execute_punishment(interaction, target, moderator, reason, minutes, no
     history = bot.data_manager.punishments.get(uid, [])
     guild = interaction.guild
     member_target = target if isinstance(target, discord.Member) else await resolve_member(guild, target.id)
-    
+
     # Determine Type
     if punishment_type == "auto":
         if minutes == -1: punishment_type = "ban"
@@ -159,7 +159,7 @@ async def execute_punishment(interaction, target, moderator, reason, minutes, no
     }
     record = await bot.data_manager.add_punishment(uid, record, persist=False)
     case_label = get_case_label(record, len(history) + 1)
-    
+
     # Update Stats
     bot.data_manager.config["stats"]["total_issued"] = bot.data_manager.config["stats"].get("total_issued", 0) + 1
     bot.data_manager.mark_config_dirty()
@@ -173,7 +173,7 @@ async def execute_punishment(interaction, target, moderator, reason, minutes, no
         status = "Banned"
     else:
         status = "Warning Logged" if is_warning else ("Escalated (Recidivism)" if is_escalated else "Standard")
-        
+
     if reason == "Custom Punishment":
         status = "Custom"
         if is_ban: status = "Custom (Ban)"
@@ -201,7 +201,7 @@ async def execute_punishment(interaction, target, moderator, reason, minutes, no
     response_embed.add_field(name="Type", value=status, inline=True)
     if not is_warning:
         response_embed.add_field(name="Duration", value=format_duration(minutes), inline=True)
-    
+
     if interaction.message:
         try:
             await interaction.message.edit(content=None, embed=response_embed, view=None)
@@ -234,7 +234,7 @@ async def execute_punishment(interaction, target, moderator, reason, minutes, no
             pass
 
     await send_punishment_log(interaction.guild, log_embed)
-    
+
     if origin_message:
         try:
             await origin_message.edit(embed=build_punish_embed(target))

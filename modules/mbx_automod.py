@@ -65,21 +65,21 @@ logger = logging.getLogger("MGXBot")
 
 
 def AntiNukeResolveView(*args, **kwargs):
-    from modules.mbx_legacy import AntiNukeResolveView as legacy_view
+    from ui.config import AntiNukeResolveView as view_cls
 
-    return legacy_view(*args, **kwargs)
+    return view_cls(*args, **kwargs)
 
 
 def AppealView(*args, **kwargs):
-    from modules.mbx_legacy import AppealView as legacy_view
+    from ui.moderation import AppealView as view_cls
 
-    return legacy_view(*args, **kwargs)
+    return view_cls(*args, **kwargs)
 
 
 def AutoModWarningView(*args, **kwargs):
-    from modules.mbx_legacy import AutoModWarningView as legacy_view
+    from ui.automod import AutoModWarningView as view_cls
 
-    return legacy_view(*args, **kwargs)
+    return view_cls(*args, **kwargs)
 
 
 def is_staff(*args, **kwargs):
@@ -103,9 +103,9 @@ def calculate_smart_punishment(user_id: str, reason: str, rules: dict, history: 
     - Points:
         - Standard: Different=1, Same=4
         - Light: Different=0.5, Same=2
-    
+
     Light Offenses: Spamming, Begging, Political, Inappropriate Lang, Off-Topic, Argumentative
-    
+
     Thresholds:
     - 0-2 points: Tier 0 (Base)
     - 3-7 points: Tier 1 (Escalated)
@@ -115,32 +115,32 @@ def calculate_smart_punishment(user_id: str, reason: str, rules: dict, history: 
     """
     now = discord.utils.utcnow()
     lookback_days = 90
-    
+
     light_offenses = {
-        "Spamming", "Begging", "Political", "Inappropriate Lang", 
+        "Spamming", "Begging", "Political", "Inappropriate Lang",
         "Off-Topic", "Argumentative"
     }
-    
+
     points = 0
     has_same_offense = False
-    
+
     for rec in history:
         ts_str = rec.get("timestamp")
         if not ts_str: continue
         dt = iso_to_dt(ts_str)
         if not dt: continue
         if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
-            
+
         if (now - dt).days <= lookback_days:
             rec_reason = rec.get("reason")
             is_light = rec_reason in light_offenses
-            
+
             if rec_reason == reason:
                 points += 2 if is_light else 4
                 has_same_offense = True
             else:
                 points += 0.5 if is_light else 1
-    
+
     base = rules.get("base", 0)
     esc = rules.get("escalated", 0)
     config = bot.data_manager.config if getattr(bot, "data_manager", None) else {}
@@ -791,13 +791,13 @@ async def handle_abuse(interaction: discord.Interaction, moderator: discord.Memb
         role = interaction.guild.get_role(rid)
         if role and role in moderator.roles:
             to_remove.append(role)
-    
+
     if to_remove:
         try:
             await moderator.remove_roles(*to_remove, reason="Anti-Abuse: Rate limit exceeded")
         except Exception:
             pass
-            
+
     embed = make_embed(
         "Security Alert: Abuse Detected",
         "> The anti-abuse rate limiter flagged a moderation action burst and removed elevated roles.",
@@ -822,7 +822,7 @@ async def punish_rogue_mod(guild: discord.Guild, member: discord.User, reason: s
 
     action_log = "No configured staff roles found on user."
     stripped_ids = []
-    
+
     if target_member:
         # 1. Strip Mod Roles
         mod_roles_ids = bot.data_manager.config.get("mod_roles", [])
@@ -831,7 +831,7 @@ async def punish_rogue_mod(guild: discord.Guild, member: discord.User, reason: s
             role = guild.get_role(rid)
             if role and role in target_member.roles:
                 to_remove.append(role)
-        
+
         if to_remove:
             try:
                 await target_member.remove_roles(*to_remove, reason=f"ANTI-NUKE: {reason}")
@@ -856,19 +856,19 @@ async def punish_rogue_mod(guild: discord.Guild, member: discord.User, reason: s
 
     embed.add_field(name="System Action", value=f"> {action_log}", inline=True)
     brand_embed(embed, guild=guild, scope=SCOPE_SYSTEM)
-    
+
     view = None
     if restore_data:
         restore_data["stripped_roles"] = stripped_ids
         restore_data["actor_id"] = member.id
         view = AntiNukeResolveView(restore_data)
-        
+
     # Dynamic pings — only include roles that are actually configured for this guild
     r_admin = bot.data_manager.config.get("role_admin")
     r_owner = bot.data_manager.config.get("role_owner")
     ping_parts = [f"<@&{r}>" for r in (r_admin, r_owner) if r]
     pings = " ".join(ping_parts) if ping_parts else None
-    
+
     await send_log(guild, embed, content=pings, view=view)
 
 def get_native_automod_stats_bucket(user_id: int) -> dict:

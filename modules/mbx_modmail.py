@@ -85,8 +85,97 @@ def ModmailControlView(*args, **kwargs):
     return view_cls(*args, **kwargs)
 
 
-def generate_transcript_html(*args, **kwargs):
-    return _legacy_value("generate_transcript_html")(*args, **kwargs)
+def generate_transcript_html(messages, user):
+    style = """
+    body { background-color: #313338; color: #dbdee1; font-family: "gg sans", "Helvetica Neue", Helvetica, Arial, sans-serif; margin: 0; padding: 20px; }
+    .chat-container { max-width: 100%; display: flex; flex-direction: column; }
+    .message { display: flex; margin-top: 1rem; padding: 5px; }
+    .message:hover { background-color: #2e3035; }
+    .message.deleted { background-color: rgba(242, 63, 66, 0.1); border-left: 3px solid #f23f42; }
+    .avatar { width: 40px; height: 40px; border-radius: 50%; margin-right: 16px; margin-top: 2px; }
+    .content { display: flex; flex-direction: column; width: 100%; }
+    .header { display: flex; align-items: center; margin-bottom: 2px; }
+    .username { font-weight: 500; color: #f2f3f5; margin-right: 0.25rem; font-size: 1rem; }
+    .timestamp { font-size: 0.75rem; color: #949ba4; margin-left: 0.25rem; }
+    .msg-content { font-size: 1rem; line-height: 1.375rem; white-space: pre-wrap; color: #dbdee1; }
+    .attachment-container { margin-top: 5px; }
+    .attachment-img { max-width: 400px; max-height: 300px; border-radius: 8px; cursor: pointer; }
+    .deleted-tag { font-size: 0.625rem; color: #f23f42; margin-left: 4px; border: 1px solid #f23f42; border-radius: 3px; padding: 0 4px; vertical-align: middle; }
+    .edited-tag { font-size: 0.625rem; color: #949ba4; margin-left: 4px; vertical-align: middle; }
+    .channel-ref { font-size: 0.75rem; color: #949ba4; font-weight: bold; margin-bottom: 2px; }
+    a { color: #00a8fc; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    """
+
+    safe_display_name = html.escape(user.display_name)
+    html_parts = [
+        f'<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><title>History - {safe_display_name}</title><style>{style}</style></head><body>',
+        f'<div class="chat-container"><h2 style="color:white; border-bottom: 1px solid #4e5058; padding-bottom: 10px;">Chat History: {safe_display_name} ({user.id})</h2>',
+    ]
+
+    # messages is Newest -> Oldest. Reverse to show Oldest -> Newest in HTML.
+    for message in reversed(messages):
+        timestamp = message["created_at"].strftime("%Y-%m-%d %H:%M:%S")
+        content = html.escape(message.get("content", ""))
+        if not content:
+            content = "<em>[No Text Content]</em>"
+        author_name = html.escape(message.get("author_name", user.display_name))
+        author_avatar_url = html.escape(
+            message.get(
+                "author_avatar_url",
+                user.display_avatar.url if getattr(user, "display_avatar", None) else "",
+            )
+        )
+
+        tags = ""
+        if message.get("deleted"):
+            tags += '<span class="deleted-tag">DELETED</span>'
+        if message.get("edited"):
+            tags += '<span class="edited-tag">(edited)</span>'
+
+        attachment_html = ""
+        if message.get("attachments"):
+            attachment_html += '<div class="attachment-container">'
+            for attachment in message["attachments"]:
+                safe_url = html.escape(attachment["url"])
+                safe_filename = html.escape(attachment["filename"])
+                ext = attachment["filename"].split(".")[-1].lower()
+                if ext in ["png", "jpg", "jpeg", "gif", "webp"]:
+                    attachment_html += (
+                        f'<a href="{safe_url}" target="_blank"><img src="{safe_url}" '
+                        f'class="attachment-img" alt="{safe_filename}"></a><br>'
+                    )
+                else:
+                    attachment_html += f'<a href="{safe_url}" target="_blank">Attachment: {safe_filename}</a><br>'
+            attachment_html += "</div>"
+
+        if message.get("stickers"):
+            attachment_html += (
+                f'<div style="color:#949ba4; font-size:0.8rem;">Stickers: '
+                f'{html.escape(", ".join(message["stickers"]))}</div>'
+            )
+
+        div_class = "message deleted" if message.get("deleted") else "message"
+        html_parts.append(
+            f"""
+        <div class="{div_class}">
+            <img class="avatar" src="{author_avatar_url}" alt="Avatar">
+            <div class="content">
+                <div class="channel-ref">#{html.escape(str(message['channel_id']))}</div>
+                <div class="header">
+                    <span class="username">{author_name}</span>
+                    <span class="timestamp">{timestamp}</span>
+                    {tags}
+                </div>
+                <div class="msg-content">{content}</div>
+                {attachment_html}
+            </div>
+        </div>
+        """
+        )
+
+    html_parts.append("</div></body></html>")
+    return "\n".join(html_parts)
 
 
 def fetch_image_bytes(*args, **kwargs):

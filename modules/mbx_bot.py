@@ -59,6 +59,10 @@ class MGXBot(commands.Bot):
         self.abuse_system = None
         self._guild_command_cleanup_done = False
 
+    async def on_message(self, message: discord.Message) -> None:
+        # cogs.modmail owns message routing and calls process_commands once.
+        return None
+
     async def setup_hook(self):
         from modules.mbx_data import AntiAbuseSystem
 
@@ -394,8 +398,10 @@ class MGXBot(commands.Bot):
                 logger.error("role_cleanup_task failed for guild %s: %s", gid, exc)
 
     async def _role_cleanup_for_guild(self, guild_id: int, guild: discord.Guild) -> None:
-        from modules.mbx_legacy import get_custom_role_limit, send_log
-        from ui.shared import format_reason_value, make_embed
+        from modules.mbx_embeds import make_embed
+        from modules.mbx_formatters import format_reason_value
+        from modules.mbx_logging import send_log
+        from modules.mbx_roles import get_custom_role_limit
 
         # Set context so send_log reads the right guild config
         prev = self.data_manager._current_guild_id

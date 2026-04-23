@@ -53,14 +53,34 @@ from modules.mbx_utils import *
 logger = logging.getLogger("MGXBot")
 
 
-def _legacy_value(name: str):
-    from modules import mbx_legacy
+def _setup_health_check(guild: discord.Guild, config: dict) -> str:
+    """Return a compact health status line for the setup dashboard."""
+    general_log_id = get_general_log_channel_id(config)
 
-    return getattr(mbx_legacy, name)
+    def _role_ok(key: str) -> bool:
+        rid = config.get(key)
+        return bool(rid and guild.get_role(int(rid)))
 
+    def _ch_ok(cid) -> bool:
+        return bool(cid and guild.get_channel(int(cid)))
 
-def _setup_health_check(*args, **kwargs):
-    return _legacy_value("_setup_health_check")(*args, **kwargs)
+    checks = [
+        ("Owner role", _role_ok("role_owner")),
+        ("Mod role", _role_ok("role_mod")),
+        ("General log", _ch_ok(general_log_id)),
+        ("Modmail inbox", _ch_ok(config.get("modmail_inbox_channel"))),
+        ("Appeals channel", _ch_ok(config.get("appeal_channel_id"))),
+    ]
+
+    ok = sum(1 for _, valid in checks if valid)
+    total = len(checks)
+    if ok == total:
+        return "✅ All critical settings look good"
+    lines = [f"⚠️ {ok}/{total} checks passed — fix the items below:"]
+    for name, valid in checks:
+        if not valid:
+            lines.append(f"  • **{name}** — not set or deleted")
+    return "\n".join(lines)
 
 
 def get_feature_flag_name(key: str) -> str:
