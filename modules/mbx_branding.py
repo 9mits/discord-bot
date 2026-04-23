@@ -168,6 +168,7 @@ def _build_branding_panel_embed(guild: discord.Guild) -> discord.Embed:
     avatar_status = branding.get("avatar_url") or ("Set" if member and getattr(member, "guild_avatar", None) else None)
     banner_status = branding.get("banner_url") or ("Set" if member and getattr(member, "guild_banner", None) else None)
     bio_status = branding.get("bio")
+    modmail_banner_status = branding.get("modmail_banner_url")
     footer_icon_status = "Server icon" if _get_footer_icon_url(guild) else None
 
     embed = make_embed(
@@ -195,6 +196,7 @@ def _build_branding_panel_embed(guild: discord.Guild) -> discord.Embed:
     embed.add_field(name="Profile Bio", value=_format_branding_panel_value(bio_status), inline=True)
     embed.add_field(name="Profile Avatar", value=_format_branding_panel_value(avatar_status), inline=True)
     embed.add_field(name="Profile Banner", value=_format_branding_panel_value(banner_status), inline=True)
+    embed.add_field(name="Modmail Banner", value=_format_branding_panel_value(modmail_banner_status), inline=True)
     embed.add_field(name="Footer Preview", value=_format_branding_panel_value(_build_footer_text(SCOPE_SYSTEM, guild)), inline=True)
     embed.add_field(name="Footer Icon", value=_format_branding_panel_value(footer_icon_status), inline=True)
     embed.add_field(

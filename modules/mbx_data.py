@@ -150,7 +150,7 @@ class DataManager:
             return gid
         if self._configs:
             return next(iter(self._configs))
-        raise RuntimeError("No current guild context set on DataManager")
+        return DEFAULT_GUILD_ID
 
     def _mark_dirty(self, guild_id: int, table: str) -> None:
         self._dirty.setdefault(guild_id, set()).add(table)
@@ -601,7 +601,26 @@ class DataManager:
     async def load_all(self) -> None:
         await self._init_db()
         await self._migrate_from_json_if_needed()
-        for guild_id in await self.get_all_active_guild_ids():
+        self._configs.clear()
+        self._punishments.clear()
+        self._roles.clear()
+        self._modmail.clear()
+        self._mod_stats.clear()
+        self._message_caches.clear()
+        self._message_cache_indexes.clear()
+        self._message_cache_retention.clear()
+        self._pings.clear()
+        self._lockdowns.clear()
+        self._case_indexes.clear()
+        self._modmail_threads_map.clear()
+        self._dirty.clear()
+
+        guild_ids = await self.get_all_active_guild_ids()
+        if not guild_ids:
+            await self.provision_guild(DEFAULT_GUILD_ID)
+            guild_ids = [DEFAULT_GUILD_ID]
+
+        for guild_id in guild_ids:
             await self.load_guild(guild_id)
 
     async def load_guild(self, guild_id: int) -> None:

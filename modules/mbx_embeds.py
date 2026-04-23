@@ -20,6 +20,26 @@ from modules.mbx_context import bot
 from modules.mbx_utils import truncate_text
 
 
+def _legacy_value(name: str):
+    try:
+        from modules import mbx_legacy
+
+        return getattr(mbx_legacy, name)
+    except Exception:
+        return None
+
+
+def _active_bot():
+    return _legacy_value("bot") or bot
+
+
+def _get_data_manager():
+    try:
+        return getattr(_active_bot(), "data_manager", None)
+    except RuntimeError:
+        return None
+
+
 def fmt_role(guild: Optional[discord.Guild], role_id: Optional[int]) -> str:
     """Format a role mention, or 'Not set' if the role doesn't exist in the guild."""
     if not role_id:
@@ -43,9 +63,13 @@ def fmt_channel(guild: Optional[discord.Guild], channel_id: Optional[int]) -> st
 
 
 def _get_branding_config(guild_id: int) -> Dict[str, Any]:
-    if getattr(bot, "data_manager", None) is None:
+    override = _legacy_value("_get_branding_config")
+    if override is not None and override is not _get_branding_config:
+        return override(guild_id)
+    data_manager = _get_data_manager()
+    if data_manager is None:
         return {}
-    return bot.data_manager._configs.get(guild_id, {}).get("_branding", {})
+    return data_manager._configs.get(guild_id, {}).get("_branding", {})
 
 
 def _build_footer_text(scope: str, guild: Optional[discord.Guild]) -> str:
@@ -105,10 +129,11 @@ def make_embed(
     color = EMBED_PALETTE.get(kind, EMBED_PALETTE["neutral"])
 
     # Per-guild custom embed color
-    if guild is not None and getattr(bot, "data_manager", None) is not None:
+    data_manager = _get_data_manager()
+    if guild is not None and data_manager is not None:
         try:
             hex_color = (
-                bot.data_manager._configs.get(guild.id, {})
+                data_manager._configs.get(guild.id, {})
                 .get("_branding", {})
                 .get("embed_color")
             )

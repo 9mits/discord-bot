@@ -1071,6 +1071,19 @@ class BrandingBioModal(discord.ui.Modal, title="Set Profile Bio"):
         await save_branding_settings(interaction.guild_id, {"bio": bio or None})
         await _refresh_branding_panel(interaction)
 
+class BrandingModmailBannerModal(discord.ui.Modal, title="Set Modmail Banner URL"):
+    banner_url = discord.ui.TextInput(
+        label="HTTPS URL for modmail banner",
+        placeholder="https://cdn.discordapp.com/...",
+        required=False,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction):
+        banner_url = self.banner_url.value.strip()
+        await save_branding_settings(interaction.guild_id, {"modmail_banner_url": banner_url or None})
+        await _refresh_branding_panel(interaction)
+
 class BrandingPanelView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=300)
@@ -1094,6 +1107,10 @@ class BrandingPanelView(discord.ui.View):
     @discord.ui.button(label="Profile Bio", style=discord.ButtonStyle.secondary, row=1)
     async def set_bio(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_modal(BrandingBioModal())
+
+    @discord.ui.button(label="Modmail Banner", style=discord.ButtonStyle.secondary, row=1)
+    async def set_modmail_banner(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(BrandingModmailBannerModal())
 
     @discord.ui.button(label="Reset All", style=discord.ButtonStyle.danger, row=2)
     async def reset_branding(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -1328,6 +1345,7 @@ __all__ = [
     "BrandingAvatarModal",
     "BrandingBannerModal",
     "BrandingBioModal",
+    "BrandingModmailBannerModal",
     "BrandingPanelView",
     "ImmunityModal",
     "SafetyView",

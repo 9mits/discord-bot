@@ -59,6 +59,20 @@ def _legacy_value(name: str):
     return getattr(mbx_legacy, name)
 
 
+def _active_bot():
+    try:
+        return _legacy_value("bot")
+    except Exception:
+        return bot
+
+
+def _data_manager():
+    try:
+        return getattr(_active_bot(), "data_manager", None)
+    except RuntimeError:
+        return None
+
+
 def ModmailPanelView(*args, **kwargs):
     from ui.modmail import ModmailPanelView as view_cls
 
@@ -80,8 +94,10 @@ def fetch_image_bytes(*args, **kwargs):
 
 
 async def send_modmail_thread_intro(thread: discord.Thread, user, category: str, fields_data: List[str]) -> None:
-    guild = thread.guild
-    member = guild.get_member(user.id) if guild else None
+    guild = getattr(thread, "guild", None)
+    user_id = getattr(user, "id", None)
+    member = guild.get_member(user_id) if guild and user_id is not None else None
+    avatar = getattr(getattr(user, "display_avatar", None), "url", None)
 
     embed = make_embed(
         "New Support Ticket",
@@ -89,18 +105,21 @@ async def send_modmail_thread_intro(thread: discord.Thread, user, category: str,
         kind="support",
         scope=SCOPE_SUPPORT,
         guild=guild,
-        thumbnail=user.display_avatar.url,
+        thumbnail=avatar,
     )
-    embed.add_field(name="User", value=f"{user.mention}\n`{user.id}`", inline=True)
+    user_value = f"{user.mention}\n`{user_id}`" if user_id is not None else str(getattr(user, "mention", "Unknown"))
+    embed.add_field(name="User", value=user_value, inline=True)
     embed.add_field(name="Category", value=category, inline=True)
 
     now = discord.utils.utcnow()
-    account_age_days = (now - user.created_at.replace(tzinfo=timezone.utc)).days
-    embed.add_field(
-        name="Account Created",
-        value=f"{discord.utils.format_dt(user.created_at, 'D')}\n({account_age_days}d ago)",
-        inline=True,
-    )
+    created_at = getattr(user, "created_at", None)
+    if created_at:
+        account_age_days = (now - created_at.replace(tzinfo=timezone.utc)).days
+        embed.add_field(
+            name="Account Created",
+            value=f"{discord.utils.format_dt(created_at, 'D')}\n({account_age_days}d ago)",
+            inline=True,
+        )
 
     if member and member.joined_at:
         join_age_days = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
@@ -110,7 +129,8 @@ async def send_modmail_thread_intro(thread: discord.Thread, user, category: str,
             inline=True,
         )
 
-    history = bot.data_manager.punishments.get(str(user.id), []) if getattr(bot, "data_manager", None) else []
+    data_manager = _data_manager()
+    history = data_manager.punishments.get(str(user_id), []) if data_manager and user_id is not None else []
     active_cases = [r for r in history if is_record_active(r)]
     embed.add_field(name="Prior Cases", value=str(len(history)), inline=True)
     embed.add_field(name="Active Cases", value=str(len(active_cases)), inline=True)
@@ -137,7 +157,7 @@ async def send_modmail_panel_message(
     is_dm_panel = in_dm or isinstance(destination, (discord.User, discord.Member, discord.DMChannel))
     embed = build_modmail_panel_embed(guild, in_dm=is_dm_panel)
     branding = _get_branding_config(guild.id)
-    panel_banner_url = MODMAIL_PANEL_BANNER_URL
+    panel_banner_url = branding.get("modmail_banner_url") or MODMAIL_PANEL_BANNER_URL
     if intro:
         note_value = str(intro).strip()
         if note_value and not note_value.lstrip().startswith((">", "-", "*")):
@@ -190,7 +210,7 @@ def build_modmail_panel_embed(guild: discord.Guild, *, in_dm: bool = False) -> d
             branding = bot.data_manager._configs.get(guild.id, {}).get("_branding", {})
         except Exception:
             pass
-    banner_url = MODMAIL_PANEL_BANNER_URL
+    banner_url = branding.get("modmail_banner_url") or MODMAIL_PANEL_BANNER_URL
     categories = branding.get("modmail_categories") or MODMAIL_PANEL_CATEGORIES
 
     description = (

@@ -349,6 +349,7 @@ from ui.config import (
     BrandingBioModal,
     BrandingColorModal,
     BrandingDisplayNameModal,
+    BrandingModmailBannerModal,
     BrandingPanelView,
     CannedRepliesView,
     CannedReplyModal,

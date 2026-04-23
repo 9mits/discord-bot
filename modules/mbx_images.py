@@ -24,6 +24,27 @@ MODMAIL_RELAY_MAX_FILE_BYTES = 8 * 1024 * 1024
 MODMAIL_RELAY_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 
 
+def _legacy_value(name: str, fallback=None):
+    try:
+        from modules import mbx_legacy
+
+        value = getattr(mbx_legacy, name)
+    except Exception:
+        return fallback
+    return fallback if value is fallback else value
+
+
+def _active_bot():
+    return _legacy_value("bot", bot)
+
+
+def _active_session():
+    try:
+        return getattr(_active_bot(), "session", None)
+    except RuntimeError:
+        return None
+
+
 async def _resolve_image_host_addresses(hostname: str) -> Tuple[List[str], Optional[str]]:
     try:
         return [str(ipaddress.ip_address(hostname))], None
@@ -66,10 +87,12 @@ async def validate_image_fetch_url(url: str) -> Tuple[Optional[str], Optional[st
     if not parsed.hostname:
         return None, "Image URL must include a hostname."
 
-    addresses, error = await _resolve_image_host_addresses(parsed.hostname)
+    resolver = _legacy_value("_resolve_image_host_addresses", _resolve_image_host_addresses)
+    addresses, error = await resolver(parsed.hostname)
     if error:
         return None, error
-    if any(not _is_public_image_ip(address) for address in addresses):
+    is_public = _legacy_value("_is_public_image_ip", _is_public_image_ip)
+    if any(not is_public(address) for address in addresses):
         return None, "Image URLs must use a public host."
     return candidate, None
 
@@ -87,16 +110,18 @@ async def fetch_image_asset(
     timeout: int = 10,
     max_bytes: int = ROLE_ICON_MAX_BYTES,
 ) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
-    if not bot.session:
+    session = _active_session()
+    if not session:
         return None, None, "Image download is unavailable right now."
 
-    validated_url, error = await validate_image_fetch_url(url)
+    validator = _legacy_value("validate_image_fetch_url", validate_image_fetch_url)
+    validated_url, error = await validator(url)
     if error:
         return None, None, error
 
     try:
         request_timeout = aiohttp.ClientTimeout(total=timeout)
-        async with bot.session.get(
+        async with session.get(
             validated_url,
             timeout=request_timeout,
             allow_redirects=False,
