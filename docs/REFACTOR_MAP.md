@@ -318,6 +318,7 @@ Automod views/modals:
 
 ## Known risks
 
+- `parse_iso_datetime` exists in both `mbx_data.py` and `mbx_utils.py` (as `iso_to_dt`). Not deduped yet because `mbx_data.py` is database code and the change is low-value / higher-risk. Revisit in a later phase.
 - `get_primary_guild()` L1248 is a single-guild leftover. After extraction, rip this out and replace all call sites with explicit guild passing.
 - `handle_abuse` L3020 and `punish_rogue_mod` L3048 interact with `abuse_system` via the proxy — they'll need the real bot reference plumbed.
 - `ExpirableMixin` is used across 7+ views. Belongs in `core/utils.py` or `core/views.py`. Must extract before any View that uses it.

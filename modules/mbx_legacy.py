@@ -73,7 +73,15 @@ from modules.mbx_services import (
     validate_guild_configuration,
 )
 from modules.mbx_context import abuse_system, bot, tree
-from modules.mbx_utils import iso_to_dt, now_iso, parse_duration_str, truncate_text
+from modules.mbx_utils import (
+    create_progress_bar,
+    extract_snowflake_id,
+    format_duration,
+    iso_to_dt,
+    now_iso,
+    parse_duration_str,
+    truncate_text,
+)
 
 # Setup Logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -481,24 +489,6 @@ async def send_modmail_thread_intro(thread: discord.Thread, user, category: str,
             embed.add_field(name="Note", value=line, inline=False)
 
     await thread.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
-
-def format_duration(minutes: int) -> str:
-    if minutes == -1:
-        return "Ban"
-    if minutes == 0:
-        return "Warning"
-    if minutes < 60:
-        return f"{minutes} mins"
-    hours = minutes // 60
-    if hours < 24:
-        return f"{hours} hour{'s' if hours != 1 else ''}"
-    days = hours // 24
-    return f"{days} day{'s' if days != 1 else ''}"
-
-def create_progress_bar(percent: float, length: int = 10) -> str:
-    percent = max(0.0, min(1.0, percent))
-    filled = int(length * percent)
-    return "█" * filled + "░" * (length - filled)
 
 def format_log_quote(value: Optional[str], *, limit: int = 1000) -> str:
     text = truncate_text(str(value or "None").strip(), limit)
@@ -936,15 +926,6 @@ def is_staff(interaction: discord.Interaction) -> bool:
     return interaction.user.guild_permissions.moderate_members
 
 
-def truncate_text(value: Optional[str], limit: int) -> str:
-    if not value:
-        return ""
-    text = str(value)
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 3)] + "..."
-
-
 async def resolve_member(guild: discord.Guild, user_id: int) -> Optional[discord.Member]:
     member = guild.get_member(user_id)
     if member:
@@ -1236,13 +1217,6 @@ def format_user_id_ref(user_id: Union[int, str], *, fallback_name: Optional[str]
         if clean_name:
             prefix = f"{clean_name} • "
     return f"{prefix}<@{user_id}> (`{user_id}`)"
-
-
-def extract_snowflake_id(raw_value: str) -> Optional[int]:
-    match = re.search(r"(\d{15,22})", str(raw_value or ""))
-    if match:
-        return int(match.group(1))
-    return int(raw_value) if str(raw_value).isdigit() else None
 
 
 def get_primary_guild() -> Optional[discord.Guild]:
