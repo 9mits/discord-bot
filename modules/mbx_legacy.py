@@ -125,6 +125,37 @@ from modules.mbx_permissions import (
     resolve_member,
     respond_with_error,
 )
+from modules.mbx_images import (
+    MODMAIL_RELAY_MAX_FILE_BYTES,
+    MODMAIL_RELAY_MAX_FILES,
+    MODMAIL_RELAY_MAX_TOTAL_BYTES,
+    PROFILE_BRANDING_MAX_BYTES,
+    ROLE_ICON_MAX_BYTES,
+    _format_image_size_limit,
+    _is_public_image_ip,
+    _make_image_data_uri,
+    _resolve_image_host_addresses,
+    fetch_image_asset,
+    fetch_image_bytes,
+    fetch_image_data_uri,
+    prepare_modmail_relay_attachments,
+    validate_image_fetch_url,
+)
+from modules.mbx_formatters import (
+    describe_punishment_record,
+    format_case_status,
+    format_user_id_ref,
+    format_user_ref,
+    get_case_id,
+    get_case_label,
+    get_modal_item_label,
+    get_punishment_duration_and_expiry,
+    get_record_expiry,
+    get_user_display_name,
+    hex_valid,
+    is_record_active,
+    join_lines,
+)
 from modules.mbx_utils import (
     create_progress_bar,
     extract_snowflake_id,
@@ -255,13 +286,7 @@ def calculate_smart_punishment(user_id: str, reason: str, rules: dict, history: 
     context = "Recidivism" if has_same_offense else "General Toxicity"
     return duration, True, f"{label} ({context})"
 
-# ----------------- Security & Utils -----------------
-ROLE_ICON_MAX_BYTES = 256000
-PROFILE_BRANDING_MAX_BYTES = 8 * 1024 * 1024
 MAX_GUILD_MEMBER_BIO_LENGTH = 190
-MODMAIL_RELAY_MAX_FILES = 5
-MODMAIL_RELAY_MAX_FILE_BYTES = 8 * 1024 * 1024
-MODMAIL_RELAY_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 BRANDING_UNSET = object()
 
 # ----------------- Utility functions -----------------
@@ -298,183 +323,6 @@ def get_custom_role_limit(member: discord.Member) -> int:
             
     return limit
 
-def hex_valid(s: str) -> bool:
-    if not isinstance(s, str): return False
-    s = s.strip()
-    if len(s) != 7 or not s.startswith("#"): return False
-    try:
-        int(s[1:], 16)
-        return True
-    except ValueError:
-        return False
-
-async def _resolve_image_host_addresses(hostname: str) -> Tuple[List[str], Optional[str]]:
-    try:
-        return [str(ipaddress.ip_address(hostname))], None
-    except ValueError:
-        pass
-
-    try:
-        loop = asyncio.get_running_loop()
-        infos = await loop.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
-    except socket.gaierror:
-        return [], "Image host could not be resolved."
-    except Exception:
-        return [], "Image host could not be validated."
-
-    addresses: List[str] = []
-    for info in infos:
-        address = info[4][0]
-        if address not in addresses:
-            addresses.append(address)
-    if not addresses:
-        return [], "Image host could not be resolved."
-    return addresses, None
-
-
-def _is_public_image_ip(value: str) -> bool:
-    try:
-        return ipaddress.ip_address(value).is_global
-    except ValueError:
-        return False
-
-
-async def validate_image_fetch_url(url: str) -> Tuple[Optional[str], Optional[str]]:
-    candidate = str(url or "").strip()
-    parsed = urlsplit(candidate)
-
-    if parsed.scheme.lower() != "https":
-        return None, "Image URLs must use HTTPS."
-    if parsed.username or parsed.password:
-        return None, "Image URLs with embedded credentials are not allowed."
-    if not parsed.hostname:
-        return None, "Image URL must include a hostname."
-
-    addresses, error = await _resolve_image_host_addresses(parsed.hostname)
-    if error:
-        return None, error
-    if any(not _is_public_image_ip(address) for address in addresses):
-        return None, "Image URLs must use a public host."
-    return candidate, None
-
-
-def _format_image_size_limit(max_bytes: int) -> str:
-    if max_bytes % (1024 * 1024) == 0:
-        return f"{max_bytes // (1024 * 1024)}MB"
-    if max_bytes % 1000 == 0:
-        return f"{max_bytes // 1000}KB"
-    return f"{max_bytes} bytes"
-
-
-async def fetch_image_asset(
-    url: str,
-    timeout: int = 10,
-    max_bytes: int = ROLE_ICON_MAX_BYTES,
-) -> Tuple[Optional[bytes], Optional[str], Optional[str]]:
-    if not bot.session:
-        return None, None, "Image download is unavailable right now."
-
-    validated_url, error = await validate_image_fetch_url(url)
-    if error:
-        return None, None, error
-
-    try:
-        request_timeout = aiohttp.ClientTimeout(total=timeout)
-        async with bot.session.get(
-            validated_url,
-            timeout=request_timeout,
-            allow_redirects=False,
-            headers={"Accept": "image/*"},
-        ) as resp:
-            if 300 <= resp.status < 400:
-                return None, None, "Image URLs cannot redirect."
-            if resp.status != 200:
-                return None, None, "Failed to download image. Check the URL."
-
-            content_type = (resp.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
-            if not content_type.startswith("image/"):
-                return None, None, "URL did not return an image."
-
-            content_length = resp.headers.get("Content-Length")
-            if content_length:
-                try:
-                    if int(content_length) > max_bytes:
-                        return None, None, f"Image too big! Max size is {_format_image_size_limit(max_bytes)}."
-                except ValueError:
-                    pass
-
-            payload = bytearray()
-            async for chunk in resp.content.iter_chunked(16384):
-                payload.extend(chunk)
-                if len(payload) > max_bytes:
-                    return None, None, f"Image too big! Max size is {_format_image_size_limit(max_bytes)}."
-            return bytes(payload), content_type, None
-    except asyncio.TimeoutError:
-        return None, None, "Image download timed out."
-    except aiohttp.ClientError:
-        return None, None, "Failed to download image. Check the URL."
-    except Exception:
-        return None, None, "Failed to download image. Check the URL."
-
-
-async def fetch_image_bytes(
-    url: str,
-    timeout: int = 10,
-    max_bytes: int = ROLE_ICON_MAX_BYTES,
-) -> Tuple[Optional[bytes], Optional[str]]:
-    payload, _content_type, error = await fetch_image_asset(url, timeout=timeout, max_bytes=max_bytes)
-    return payload, error
-
-
-def _make_image_data_uri(payload: bytes, content_type: str) -> str:
-    encoded = base64.b64encode(payload).decode("ascii")
-    return f"data:{content_type};base64,{encoded}"
-
-
-async def fetch_image_data_uri(
-    url: str,
-    timeout: int = 10,
-    max_bytes: int = PROFILE_BRANDING_MAX_BYTES,
-) -> Tuple[Optional[str], Optional[str]]:
-    payload, content_type, error = await fetch_image_asset(url, timeout=timeout, max_bytes=max_bytes)
-    if error or payload is None or content_type is None:
-        return None, error or "Failed to download image. Check the URL."
-    return _make_image_data_uri(payload, content_type), None
-
-
-async def prepare_modmail_relay_attachments(attachments) -> Tuple[List[discord.File], Optional[str]]:
-    files: List[discord.File] = []
-    skipped_extra = 0
-    skipped_oversized = 0
-    skipped_total_limit = 0
-    total_bytes = 0
-
-    for attachment in attachments:
-        if len(files) >= MODMAIL_RELAY_MAX_FILES:
-            skipped_extra += 1
-            continue
-
-        size = int(getattr(attachment, "size", 0) or 0)
-        if size > MODMAIL_RELAY_MAX_FILE_BYTES:
-            skipped_oversized += 1
-            continue
-        if total_bytes + size > MODMAIL_RELAY_MAX_TOTAL_BYTES:
-            skipped_total_limit += 1
-            continue
-
-        files.append(await attachment.to_file())
-        total_bytes += size
-
-    notices = []
-    if skipped_extra:
-        notices.append(f"Skipped {skipped_extra} attachment(s) after the first {MODMAIL_RELAY_MAX_FILES}.")
-    if skipped_oversized:
-        notices.append("Skipped attachment(s) over 8 MiB.")
-    if skipped_total_limit:
-        notices.append("Skipped attachment(s) to stay under 20 MiB total.")
-    if notices:
-        return files, "Some attachments were not relayed. " + " ".join(notices)
-    return files, None
 
 
 async def send_modmail_thread_intro(thread: discord.Thread, user, category: str, fields_data: List[str]) -> None:
@@ -658,40 +506,6 @@ def build_branding_error_embed(guild: Optional[discord.Guild], detail: str) -> d
     return make_error_embed("Branding Update Failed", f"> {detail}", scope=SCOPE_SYSTEM, guild=guild)
 
 
-def join_lines(lines: List[str], fallback: str = "None") -> str:
-    rendered = [line for line in lines if line]
-    return "\n".join(rendered) if rendered else fallback
-
-
-def get_modal_item_label(item: discord.ui.Item) -> str:
-    underlying = getattr(item, "_underlying", None)
-    label = getattr(underlying, "label", None)
-    if label:
-        return str(label)
-    return "Field"
-
-
-def get_user_display_name(user: Union[discord.User, discord.Member]) -> str:
-    raw_name = (
-        getattr(user, "display_name", None)
-        or getattr(user, "global_name", None)
-        or getattr(user, "name", None)
-        or str(getattr(user, "id", "Unknown User"))
-    )
-    return truncate_text(discord.utils.escape_markdown(str(raw_name).strip() or "Unknown User"), 80)
-
-
-def format_user_ref(user: Union[discord.User, discord.Member]) -> str:
-    return f"{get_user_display_name(user)} • {user.mention} (`{user.id}`)"
-
-
-def format_user_id_ref(user_id: Union[int, str], *, fallback_name: Optional[str] = None) -> str:
-    prefix = ""
-    if fallback_name:
-        clean_name = truncate_text(discord.utils.escape_markdown(str(fallback_name).strip()), 80)
-        if clean_name:
-            prefix = f"{clean_name} • "
-    return f"{prefix}<@{user_id}> (`{user_id}`)"
 
 
 async def send_modmail_panel_message(
@@ -751,95 +565,8 @@ async def maybe_send_dm_modmail_panel(user: discord.User, *, guild: Optional[dis
     return True
 
 
-def get_case_id(record: dict) -> Optional[int]:
-    case_id = record.get("case_id")
-    if isinstance(case_id, int) and case_id > 0:
-        return case_id
-    return None
-
-
-def get_case_label(record: dict, fallback: Optional[int] = None) -> str:
-    case_id = get_case_id(record)
-    if case_id is not None:
-        return f"Case #{case_id}"
-    if fallback is not None:
-        return f"Case #{fallback}"
-    return "Case"
-
-
-def get_record_expiry(record: dict) -> Optional[datetime]:
-    duration = record.get("duration_minutes", 0)
-    if duration in (0, None):
-        return None
-    if duration == -1:
-        return None
-    issued_at = iso_to_dt(record.get("timestamp"))
-    if not issued_at:
-        return None
-    return issued_at + timedelta(minutes=duration)
-
-
-def format_case_status(record: dict) -> str:
-    status = str(record.get("status", "open")).replace("_", " ").title()
-    resolution = str(record.get("resolution_state", "pending")).replace("_", " ").title()
-    return f"{status} • {resolution}"
-
-
 def get_feature_flag_name(key: str) -> str:
     return FEATURE_FLAG_LABELS.get(key, key.replace("_", " ").title())
-
-
-def is_record_active(record: dict, now: Optional[datetime] = None) -> bool:
-    now = now or discord.utils.utcnow()
-    punishment_type = record.get("type")
-    duration = record.get("duration_minutes", 0)
-
-    if punishment_type == "ban":
-        if duration == -1:
-            return record.get("active", True)
-        expiry = get_record_expiry(record)
-        return bool(record.get("active", True) and expiry and expiry > now)
-
-    if punishment_type == "timeout" and duration > 0:
-        expiry = get_record_expiry(record)
-        return bool(expiry and expiry > now)
-
-    return False
-
-
-def describe_punishment_record(record: dict) -> str:
-    punishment_type = record.get("type", "warn")
-    duration = record.get("duration_minutes", 0)
-
-    if punishment_type == "ban":
-        return "Permanent Ban" if duration == -1 else f"Tempban • {format_duration(duration)}"
-    if punishment_type == "timeout":
-        return f"Timeout • {format_duration(duration)}"
-    if punishment_type == "kick":
-        return "Kick"
-    if punishment_type == "softban":
-        return "Softban"
-    return "Warning"
-
-
-def get_punishment_duration_and_expiry(record: dict) -> Tuple[Optional[str], Optional[str]]:
-    punishment_type = str(record.get("type", "warn") or "warn").lower()
-    duration = int(record.get("duration_minutes", 0) or 0)
-    expires_at = get_record_expiry(record)
-
-    if punishment_type == "timeout" and duration > 0:
-        return format_duration(duration), discord.utils.format_dt(expires_at, "F") if expires_at else None
-    if punishment_type == "ban":
-        if duration == -1:
-            return "Ban", "Never"
-        if duration > 0:
-            return format_duration(duration), discord.utils.format_dt(expires_at, "F") if expires_at else None
-        return "Ban", None
-    if punishment_type == "kick":
-        return "Kick", None
-    if punishment_type == "softban":
-        return "Softban", None
-    return None, None
 
 
 def get_undo_reason_details(preset_value: Optional[str], custom_reason: Optional[str] = None) -> Tuple[str, str]:
