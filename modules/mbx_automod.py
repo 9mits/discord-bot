@@ -44,10 +44,10 @@ from modules.mbx_logging import (
 )
 from modules.mbx_permissions import (
     get_primary_guild,
-    is_staff,
+    is_staff as _permission_is_staff,
     is_staff_member,
     resolve_member,
-    respond_with_error,
+    respond_with_error as _permission_respond_with_error,
 )
 from modules.mbx_punish import execute_punishment, get_valid_duration
 from modules.mbx_services import (
@@ -80,6 +80,20 @@ def AutoModWarningView(*args, **kwargs):
     from modules.mbx_legacy import AutoModWarningView as legacy_view
 
     return legacy_view(*args, **kwargs)
+
+
+def is_staff(*args, **kwargs):
+    from modules import mbx_legacy
+
+    legacy_check = getattr(mbx_legacy, "is_staff", _permission_is_staff)
+    return legacy_check(*args, **kwargs)
+
+
+def respond_with_error(*args, **kwargs):
+    from modules import mbx_legacy
+
+    legacy_response = getattr(mbx_legacy, "respond_with_error", _permission_respond_with_error)
+    return legacy_response(*args, **kwargs)
 
 
 def calculate_smart_punishment(user_id: str, reason: str, rules: dict, history: list) -> tuple[int, bool, str]:

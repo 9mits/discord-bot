@@ -259,6 +259,54 @@ from modules.mbx_cases import (
     undo_case_record,
 )
 from modules.mbx_punish import build_punish_embed, execute_punishment
+from modules.mbx_branding import (
+    BRANDING_UNSET,
+    MAX_GUILD_MEMBER_BIO_LENGTH,
+    _build_branding_panel_embed,
+    _refresh_branding_panel,
+    apply_guild_member_branding,
+    build_branding_error_embed,
+    save_branding_settings,
+)
+from modules.mbx_setup import (
+    build_canned_replies_embed,
+    build_config_dashboard_embed,
+    build_escalation_matrix_embed,
+    build_feature_flags_embed,
+    build_mod_help_embed,
+    build_modmail_settings_embed,
+    build_rules_dashboard_embed,
+    build_setup_dashboard_embed,
+    build_setup_validation_embed,
+    build_status_embed,
+    get_feature_flag_name,
+)
+from modules.mbx_modmail import (
+    _parse_user_id,
+    apply_modmail_ticket_state,
+    build_modmail_panel_embed,
+    export_modmail_transcript,
+    log_modmail_action,
+    maybe_send_dm_modmail_panel,
+    refresh_modmail_message,
+    refresh_modmail_ticket_log,
+    resolve_modmail_thread,
+    resolve_modmail_user,
+    send_modmail_panel_message,
+    send_modmail_thread_intro,
+)
+from modules.mbx_staff import (
+    _split_case_input,
+    build_test_env_embed,
+    get_mod_cases,
+    get_staff_stats_embed,
+    log_case_management_action,
+)
+from modules.mbx_public import (
+    build_public_execution_embed,
+    execute_public_execution_vote,
+    get_public_execution_action_label,
+)
 from modules.mbx_roles import (
     add_custom_role_registry_fields,
     build_custom_role_registry_entries,
@@ -490,57 +538,8 @@ def resolve_bot_token() -> str:
 # Runtime bootstrap moved to modules.mbx_bot.
 
 
-MAX_GUILD_MEMBER_BIO_LENGTH = 190
-BRANDING_UNSET = object()
 
 # ----------------- Utility functions -----------------
-async def send_modmail_thread_intro(thread: discord.Thread, user, category: str, fields_data: List[str]) -> None:
-    guild = thread.guild
-    member = guild.get_member(user.id) if guild else None
-
-    embed = make_embed(
-        "New Support Ticket",
-        f"> A new ticket has been opened by {user.mention}.",
-        kind="support",
-        scope=SCOPE_SUPPORT,
-        guild=guild,
-        thumbnail=user.display_avatar.url,
-    )
-    embed.add_field(name="User", value=f"{user.mention}\n`{user.id}`", inline=True)
-    embed.add_field(name="Category", value=category, inline=True)
-
-    now = discord.utils.utcnow()
-    account_age_days = (now - user.created_at.replace(tzinfo=timezone.utc)).days
-    embed.add_field(
-        name="Account Created",
-        value=f"{discord.utils.format_dt(user.created_at, 'D')}\n({account_age_days}d ago)",
-        inline=True,
-    )
-
-    if member and member.joined_at:
-        join_age_days = (now - member.joined_at.replace(tzinfo=timezone.utc)).days
-        embed.add_field(
-            name="Joined Server",
-            value=f"{discord.utils.format_dt(member.joined_at, 'D')}\n({join_age_days}d ago)",
-            inline=True,
-        )
-
-    history = bot.data_manager.punishments.get(str(user.id), []) if getattr(bot, "data_manager", None) else []
-    active_cases = [r for r in history if is_record_active(r)]
-    embed.add_field(name="Prior Cases", value=str(len(history)), inline=True)
-    embed.add_field(name="Active Cases", value=str(len(active_cases)), inline=True)
-
-    for line in fields_data:
-        line = line.strip()
-        if not line:
-            continue
-        if ":" in line:
-            name, value = line.split(":", 1)
-            embed.add_field(name=name.strip(), value=value.strip() or "—", inline=False)
-        else:
-            embed.add_field(name="Note", value=line, inline=False)
-
-    await thread.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
 
 
@@ -550,224 +549,24 @@ def get_valid_duration(minutes: int) -> timedelta:
     # Discord max timeout is 28 days (40320 minutes)
     return timedelta(minutes=min(minutes, 40320))
 
-async def _refresh_branding_panel(interaction: discord.Interaction) -> None:
-    embed = _build_branding_panel_embed(interaction.guild)
-    await interaction.response.edit_message(embed=embed, view=BrandingPanelView())
-
-
-async def apply_guild_member_branding(
-    guild: discord.Guild,
-    *,
-    display_name: Any = BRANDING_UNSET,
-    avatar_url: Any = BRANDING_UNSET,
-    banner_url: Any = BRANDING_UNSET,
-    bio: Any = BRANDING_UNSET,
-    reason: Optional[str] = None,
-) -> Optional[str]:
-    if guild is None:
-        return "This command can only be used in a server."
-
-    payload: Dict[str, Any] = {}
-
-    if display_name is not BRANDING_UNSET:
-        payload["nick"] = str(display_name or "").strip() or None
-
-    if avatar_url is not BRANDING_UNSET:
-        avatar_value = str(avatar_url or "").strip()
-        if avatar_value:
-            data_uri, error = await fetch_image_data_uri(avatar_value)
-            if error:
-                return f"Avatar update failed: {error}"
-            payload["avatar"] = data_uri
-        else:
-            payload["avatar"] = None
-
-    if banner_url is not BRANDING_UNSET:
-        banner_value = str(banner_url or "").strip()
-        if banner_value:
-            data_uri, error = await fetch_image_data_uri(banner_value)
-            if error:
-                return f"Banner update failed: {error}"
-            payload["banner"] = data_uri
-        else:
-            payload["banner"] = None
-
-    if bio is not BRANDING_UNSET:
-        payload["bio"] = str(bio or "").strip() or None
-
-    if not payload:
-        return None
-
-    try:
-        await bot.http.request(
-            Route("PATCH", "/guilds/{guild_id}/members/@me", guild_id=guild.id),
-            json=payload,
-            reason=reason,
-        )
-    except discord.Forbidden:
-        return "Discord rejected the branding update. Check the bot's permissions and current member profile support."
-    except discord.HTTPException as exc:
-        detail = getattr(exc, "text", None) or str(exc)
-        return f"Discord rejected the branding update: {truncate_text(detail, 200)}"
-
-    return None
-
-
-async def save_branding_settings(guild_id: int, updates: Dict[str, Optional[str]]) -> None:
-    cfg = bot.data_manager._configs.setdefault(guild_id, {})
-    branding = cfg.setdefault("_branding", {})
-    for key, value in updates.items():
-        if value is None or value == "":
-            branding.pop(key, None)
-        else:
-            branding[key] = value
-    if not branding:
-        cfg["_branding"] = {}
-    bot.data_manager._mark_dirty(guild_id, "guild_configs")
-    await bot.data_manager.save_guild(guild_id, {"guild_configs"})
-
-
-def build_branding_error_embed(guild: Optional[discord.Guild], detail: str) -> discord.Embed:
-    return make_error_embed("Branding Update Failed", f"> {detail}", scope=SCOPE_SYSTEM, guild=guild)
 
 
 
 
-async def send_modmail_panel_message(
-    destination: Union[discord.abc.Messageable, discord.TextChannel, discord.User],
-    guild: discord.Guild,
-    *,
-    intro: Optional[str] = None,
-    in_dm: bool = False,
-):
-    is_dm_panel = in_dm or isinstance(destination, (discord.User, discord.Member, discord.DMChannel))
-    embed = build_modmail_panel_embed(guild, in_dm=is_dm_panel)
-    branding = _get_branding_config(guild.id)
-    panel_banner_url = MODMAIL_PANEL_BANNER_URL
-    if intro:
-        note_value = str(intro).strip()
-        if note_value and not note_value.lstrip().startswith((">", "-", "*")):
-            note_value = f"> {note_value}"
-        if note_value:
-            embed.add_field(name="Quick Note", value=note_value, inline=False)
-
-    img_data, _ = await fetch_image_bytes(panel_banner_url, max_bytes=PROFILE_BRANDING_MAX_BYTES)
-    if img_data:
-        embed.set_image(url="attachment://banner.png")
-        file = discord.File(io.BytesIO(img_data), filename="banner.png")
-        return await destination.send(embed=embed, file=file, view=ModmailPanelView())
-
-    embed.set_image(url=panel_banner_url)
-    return await destination.send(embed=embed, view=ModmailPanelView())
 
 
-async def maybe_send_dm_modmail_panel(user: discord.User, *, guild: Optional[discord.Guild] = None, force: bool = False, intro: Optional[str] = None) -> bool:
-    guild = guild or get_primary_guild()
-    if guild is None:
-        return False
-
-    if not get_feature_flag(bot.data_manager._configs.get(guild.id, {}), "dm_modmail_prompt", True):
-        return False
-
-    cooldown_minutes = max(1, int(bot.data_manager._configs.get(guild.id, {}).get("dm_modmail_panel_cooldown_minutes", 30) or 30))
-    now_ts = time.time()
-    # Cooldown keyed per (guild_id, user_id) so multi-server prompts don't suppress each other
-    cooldown_key = (guild.id, user.id)
-    last_sent = bot.dm_modmail_prompt_cooldowns.get(cooldown_key, 0.0)
-    if not force and last_sent and now_ts - last_sent < cooldown_minutes * 60:
-        return False
-
-    note = intro or "Need staff help? Open one private ticket below. Once it is open, keep replying in this DM."
-    try:
-        await send_modmail_panel_message(user, guild, intro=note, in_dm=True)
-    except discord.Forbidden:
-        return False
-    except Exception as exc:
-        logger.warning("Failed to send DM modmail panel to %s: %s", user.id, exc)
-        return False
-
-    bot.dm_modmail_prompt_cooldowns[cooldown_key] = now_ts
-    return True
 
 
-def get_feature_flag_name(key: str) -> str:
-    return FEATURE_FLAG_LABELS.get(key, key.replace("_", " ").title())
 
 
-def build_mod_help_embed(guild: discord.Guild) -> discord.Embed:
-    embed = make_embed(
-        "Moderation Command Guide",
-        "> Core moderation workflows, context tools, and channel controls.",
-        kind="info",
-        scope=SCOPE_MODERATION,
-        guild=guild,
-    )
-    embed.add_field(
-        name="Case Management",
-        value="\n".join([
-            "`/mod case` — Open a case panel for notes, status, evidence, and assignment.",
-            "`/mod history` — Browse a user’s disciplinary record case-by-case.",
-            "`/mod active` — View all active bans and timeouts.",
-            "`/mod undopunish` — Reverse a punishment with a reason and case selector.",
-        ]),
-        inline=False,
-    )
-    embed.add_field(
-        name="Actions",
-        value="\n".join([
-            "`/mod punish` — Open the sanction console with smart escalation.",
-            "`/mod publicpunish` — Punish and post the result publicly in the channel.",
-            "`/mod purge` — Bulk-delete messages with user or keyword filtering.",
-        ]),
-        inline=False,
-    )
-    embed.add_field(
-        name="Channel Controls",
-        value="\n".join([
-            "`/mod lock` — Restrict messaging in the current channel.",
-            "`/mod unlock` — Restore messaging in the current channel.",
-        ]),
-        inline=False,
-    )
-    return embed
 
 
-def build_modmail_panel_embed(guild: discord.Guild, *, in_dm: bool = False) -> discord.Embed:
-    # Per-guild branding overrides
-    branding = {}
-    if guild is not None and getattr(bot, "data_manager", None) is not None:
-        try:
-            branding = bot.data_manager._configs.get(guild.id, {}).get("_branding", {})
-        except Exception:
-            pass
-    banner_url = MODMAIL_PANEL_BANNER_URL
-    categories = branding.get("modmail_categories") or MODMAIL_PANEL_CATEGORIES
 
-    description = (
-        "> Need staff help? Open a ticket below — once it's open, continue replying here in DMs."
-        if in_dm
-        else "> Need staff help? Open a private ticket below — the bot will follow up with you in DMs."
-    )
-    embed = make_embed(
-        "Contact Staff",
-        description,
-        kind="support",
-        scope=SCOPE_SUPPORT,
-        guild=guild,
-    )
-    for cat_name, cat_desc in categories:
-        embed.add_field(name=cat_name, value=cat_desc, inline=True)
-    embed.add_field(
-        name="Before You Open",
-        value="> Include usernames, links, IDs, or screenshots when possible.\n> Pick the closest type so staff can route your ticket faster.",
-        inline=False,
-    )
-    if banner_url:
-        try:
-            embed.set_image(url=banner_url)
-        except Exception:
-            pass
-    return embed
+
+
+
+
+
 
 
 def _setup_health_check(guild: discord.Guild, config: dict) -> str:
@@ -800,124 +599,13 @@ def _setup_health_check(guild: discord.Guild, config: dict) -> str:
     return "\n".join(lines)
 
 
-def build_setup_dashboard_embed(guild: discord.Guild) -> discord.Embed:
-    config = bot.data_manager.config
-    general_log_channel_id = get_general_log_channel_id(config)
-    configured_punishment_log_channel_id = config.get("punishment_log_channel_id")
-
-    health = _setup_health_check(guild, config)
-    all_ok = health.startswith("✅")
-    embed = make_embed(
-        "Server Configuration",
-        f"> Use the panels below to configure roles, channels, and guild-wide settings.\n\n{health}",
-        kind="success" if all_ok else "warning",
-        scope=SCOPE_SYSTEM,
-        guild=guild,
-    )
-
-    # --- Roles ---
-    embed.add_field(name="Owner", value=fmt_role(guild, config.get("role_owner")), inline=True)
-    embed.add_field(name="Admin", value=fmt_role(guild, config.get("role_admin")), inline=True)
-    embed.add_field(name="Moderator", value=fmt_role(guild, config.get("role_mod")), inline=True)
-    embed.add_field(name="Anchor Role", value=fmt_role(guild, config.get("role_anchor")), inline=True)
-    embed.add_field(name="Community Manager", value=fmt_role(guild, config.get("role_community_manager")), inline=True)
-    embed.add_field(name="\u200b", value="\u200b", inline=True)  # spacer
-
-    # --- Log Channels ---
-    _automod_log = config.get("automod_log_channel_id")
-    _automod_report = config.get("automod_report_channel_id")
-    embed.add_field(
-        name="Log Channels",
-        value=join_lines([
-            "General: " + fmt_channel(guild, general_log_channel_id),
-            "Punishments: " + (fmt_channel(guild, configured_punishment_log_channel_id) if configured_punishment_log_channel_id else "Falls back to general"),
-            "AutoMod: " + fmt_channel(guild, _automod_log),
-            "Reports: " + fmt_channel(guild, _automod_report),
-        ]),
-        inline=True,
-    )
-
-    # --- Support Channels ---
-    _modmail_inbox = config.get("modmail_inbox_channel")
-    _modmail_panel = config.get("modmail_panel_channel")
-    _appeal = config.get("appeal_channel_id")
-    embed.add_field(
-        name="Support Channels",
-        value=join_lines([
-            "Modmail Inbox: " + fmt_channel(guild, _modmail_inbox),
-            "Modmail Panel: " + fmt_channel(guild, _modmail_panel),
-            "Appeals: " + fmt_channel(guild, _appeal),
-        ]),
-        inline=True,
-    )
 
-    return embed
 
 
-def build_modmail_settings_embed(guild: discord.Guild) -> discord.Embed:
-    config = bot.data_manager.config
-    discussion_threads = config.get("modmail_discussion_threads", True)
-    dm_prompt = get_feature_flag(config, "dm_modmail_prompt", True)
-    sla = config.get("modmail_sla_minutes", 60)
-    cooldown = config.get("dm_modmail_panel_cooldown_minutes", 30)
-    open_count = sum(1 for t in bot.data_manager.modmail.values() if t.get("status") == "open")
-    embed = make_embed(
-        "Modmail Settings",
-        "> Configure how the ticket inbox behaves for staff and users.",
-        kind="support",
-        scope=SCOPE_SUPPORT,
-        guild=guild,
-    )
-    embed.add_field(name="Discussion Threads", value="On" if discussion_threads else "Off", inline=True)
-    embed.add_field(name="DM Prompt", value="On" if dm_prompt else "Off", inline=True)
-    embed.add_field(name="SLA Reminder", value=f"{sla} min", inline=True)
-    embed.add_field(name="DM Panel Cooldown", value=f"{cooldown} min", inline=True)
-    embed.add_field(name="Open Tickets", value=str(open_count), inline=True)
-    return embed
 
 
-def build_config_dashboard_embed(guild: discord.Guild) -> discord.Embed:
-    config = bot.data_manager.config
-    flags = config.get("feature_flags", {})
-    enabled_count = sum(1 for value in flags.values() if value)
-    native_settings = get_native_automod_settings(config)
-    embed = make_embed(
-        "Bot Settings",
-        "> Manage backups, feature toggles, punishment scaling, and quick replies.",
-        kind="info",
-        scope=SCOPE_SYSTEM,
-        guild=guild,
-    )
-    embed.add_field(name="Features Active", value=f"{enabled_count} / {len(flags)}", inline=True)
-    embed.add_field(name="Schema Version", value=f"v{config.get('schema_version', DEFAULT_SCHEMA_VERSION)}", inline=True)
-    embed.add_field(name="SLA Reminder", value=f"{config.get('modmail_sla_minutes', 60)} min", inline=True)
-    embed.add_field(name="Native AutoMod", value="On" if native_settings.get("enabled", True) else "Off", inline=True)
-    embed.add_field(name="Escalation Steps", value=str(len(get_escalation_steps(config))), inline=True)
-    canned = config.get("modmail_canned_replies", {})
-    embed.add_field(name="Saved Replies", value=str(len(canned)), inline=True)
-    return embed
 
 
-def build_rules_dashboard_embed(guild: discord.Guild) -> discord.Embed:
-    rules = bot.data_manager.config.get("punishment_rules", DEFAULT_RULES)
-    steps = get_escalation_steps(bot.data_manager.config)
-    embed = make_embed(
-        "Punishment Rules",
-        "> Preset rule baselines used by the punishment console. Base = first offence, Escalated = repeat offence.",
-        kind="warning",
-        scope=SCOPE_MODERATION,
-        guild=guild,
-    )
-    embed.add_field(name="Total Rules", value=str(len(rules)), inline=True)
-    embed.add_field(name="Escalation Tiers", value=str(len(steps)), inline=True)
-    embed.add_field(name="\u200b", value="\u200b", inline=True)
-    for rule_name, data in list(rules.items())[:6]:
-        embed.add_field(
-            name=rule_name,
-            value=f"Base: {format_duration(data['base'])}\nEsc: {format_duration(data['escalated'])}",
-            inline=True,
-        )
-    return embed
 
 
 
@@ -988,109 +676,13 @@ def build_rules_dashboard_embed(guild: discord.Guild) -> discord.Embed:
 
 
 
-def build_feature_flags_embed(guild: discord.Guild) -> discord.Embed:
-    flags = bot.data_manager.config.get("feature_flags", {})
-    enabled_count = sum(1 for v in flags.values() if v)
-    embed = make_embed(
-        "Feature Toggles",
-        f"> **{enabled_count}/{len(flags)}** systems are currently active. Use the toggles below to enable or disable features.",
-        kind="info",
-        scope=SCOPE_SYSTEM,
-        guild=guild,
-    )
-    for key, value in sorted(flags.items()):
-        status = "On" if value else "Off"
-        embed.add_field(name=get_feature_flag_name(key), value=status, inline=True)
-    return embed
 
 
-def build_escalation_matrix_embed(guild: discord.Guild) -> discord.Embed:
-    embed = make_embed(
-        "Punishment Scaling",
-        "> Controls how punishments scale when a user reoffends. Each tier activates at a point threshold.",
-        kind="warning",
-        scope=SCOPE_MODERATION,
-        guild=guild,
-    )
-    for step in get_escalation_steps(bot.data_manager.config):
-        mode_label = "Base duration" if step.mode == "base" else ("Scaled duration" if step.mode == "escalated" else "Ban")
-        ban_note = " • Auto Ban" if step.force_ban else ""
-        embed.add_field(
-            name=step.label or f"{step.mode.title()} Tier",
-            value=f"From **{step.minimum_points}** pts\n{mode_label} × {step.multiplier}{ban_note}",
-            inline=True,
-        )
-    return embed
 
 
-def build_canned_replies_embed(guild: discord.Guild) -> discord.Embed:
-    replies = bot.data_manager.config.get("modmail_canned_replies", {})
-    embed = make_embed(
-        "Saved Replies",
-        "> Quick reply templates staff can send in modmail.",
-        kind="support",
-        scope=SCOPE_SUPPORT,
-        guild=guild,
-    )
-    for key, value in list(replies.items())[:10]:
-        embed.add_field(name=key, value=truncate_text(value, 200), inline=False)
-    if not replies:
-        embed.add_field(name="Templates", value="No saved replies have been added yet.", inline=False)
-    return embed
 
 
-def build_setup_validation_embed(guild: discord.Guild, findings: List[Any]) -> discord.Embed:
-    summary_counter = Counter(finding.level for finding in findings)
-    kind = "success" if summary_counter.get("error", 0) == 0 and summary_counter.get("warning", 0) == 0 else ("warning" if summary_counter.get("error", 0) == 0 else "danger")
-    embed = make_embed(
-        "Setup Check",
-        "> This checks whether your saved channels, roles, and bot permissions still look correct.",
-        kind=kind,
-        scope=SCOPE_SYSTEM,
-        guild=guild,
-    )
-    embed.add_field(name="Errors", value=str(summary_counter.get("error", 0)), inline=True)
-    embed.add_field(name="Warnings", value=str(summary_counter.get("warning", 0)), inline=True)
-    embed.add_field(name="Success", value=str(summary_counter.get("success", 0)), inline=True)
-    grouped = defaultdict(list)
-    for finding in findings:
-        grouped[finding.section].append(f"[{finding.level.upper()}] {finding.message}")
-    for section, messages in grouped.items():
-        embed.add_field(name=section, value=truncate_text("\n".join(messages), 1024), inline=False)
-    return embed
 
-
-def build_status_embed(guild: discord.Guild) -> discord.Embed:
-    latency = round(bot.latency * 1000)
-    uptime_seconds = int(time.time() - bot.start_time)
-    days, remainder = divmod(uptime_seconds, 86400)
-    hours, remainder = divmod(remainder, 3600)
-    minutes, seconds = divmod(remainder, 60)
-    uptime_str = f"{days}d {hours}h {minutes}m {seconds}s"
-
-    if latency < 100:
-        latency_label = f"`{latency}ms` — Good"
-    elif latency < 250:
-        latency_label = f"`{latency}ms` — Fair"
-    else:
-        latency_label = f"`{latency}ms` — High"
-
-    total_records = sum(len(records) for records in bot.data_manager.punishments.values())
-    open_tickets = sum(1 for ticket in bot.data_manager.modmail.values() if ticket.get("status") == "open")
-    embed = make_embed(
-        "System Status",
-        "> Operational health for runtime and staff-facing systems.",
-        kind="info",
-        scope=SCOPE_SYSTEM,
-        guild=guild,
-    )
-    embed.add_field(name="Latency", value=latency_label, inline=True)
-    embed.add_field(name="Uptime", value=f"`{uptime_str}`", inline=True)
-    embed.add_field(name="Members", value=str(guild.member_count or 0), inline=True)
-    embed.add_field(name="Open Tickets", value=str(open_tickets), inline=True)
-    embed.add_field(name="Punishment Records", value=str(total_records), inline=True)
-    embed.add_field(name="Cache Size", value=str(len(bot.data_manager.message_cache)), inline=True)
-    return embed
 
 
 
@@ -1142,155 +734,6 @@ def build_status_embed(guild: discord.Guild) -> discord.Embed:
 
 
 
-def get_public_execution_action_label(punishment_type: str) -> str:
-    mapping = {
-        "ban": "Ban",
-        "kick": "Kick",
-        "timeout": "Timeout",
-        "warn": "Warn",
-        "softban": "Softban",
-    }
-    return mapping.get(punishment_type, "Punish")
-
-
-def build_public_execution_embed(
-    guild: discord.Guild,
-    *,
-    target_id: int,
-    target_avatar_url: Optional[str],
-    punishment_type: str,
-    reason: str,
-    threshold: int,
-    minutes: int,
-    approvals: int = 0,
-) -> discord.Embed:
-    action_label = get_public_execution_action_label(punishment_type)
-    embed = make_embed(
-        "Public Execution Started",
-        (
-            f"Use the button below to approve **{action_label}** for <@{target_id}>.\n\n"
-            f"The action will run once **{threshold}** approval(s) are recorded."
-        ),
-        kind="danger",
-        scope=SCOPE_MODERATION,
-        guild=guild,
-        thumbnail=target_avatar_url,
-    )
-    embed.add_field(name="Reason", value=format_reason_value(reason, limit=200), inline=False)
-    if minutes > 0:
-        embed.add_field(name="Duration", value=format_duration(minutes), inline=True)
-    embed.add_field(name="Approvals", value=f"{approvals}/{threshold}", inline=True)
-    return embed
-
-
-async def execute_public_execution_vote(
-    channel: discord.abc.Messageable,
-    guild: discord.Guild,
-    data: Dict[str, Any],
-) -> None:
-    try:
-        target = await guild.fetch_member(data["target_id"])
-    except discord.NotFound:
-        try:
-            target = await bot.fetch_user(data["target_id"])
-        except Exception:
-            target = None
-
-    if target is None:
-        return
-
-    target_member = target if isinstance(target, discord.Member) else await resolve_member(guild, data["target_id"])
-
-    try:
-        moderator = await guild.fetch_member(data["moderator_id"])
-    except Exception:
-        moderator = None
-
-    try:
-        p_type = data["type"]
-        minutes = data["duration"]
-        action_verb = "Banned" if p_type == "ban" else ("Kicked" if p_type == "kick" else "Timed Out")
-
-        dm_embed = make_embed(
-            "Public Execution Result",
-            f"> You have been **{action_verb}** in **{guild.name}** through a public execution vote.",
-            kind="danger",
-            scope=SCOPE_MODERATION,
-            guild=guild,
-        )
-        dm_embed.add_field(name="Reason", value=format_reason_value(data["reason"], limit=1000), inline=False)
-        if data["user_msg"]:
-            dm_embed.add_field(name="Moderator Message", value=format_log_quote(data["user_msg"], limit=1024), inline=False)
-
-        if p_type == "ban" and minutes == -1:
-            dm_embed.add_field(name="Duration", value="Ban", inline=True)
-        elif minutes > 0:
-            dm_embed.add_field(name="Duration", value=format_duration(minutes), inline=True)
-
-        view = AppealView(guild.id, target.id, data["moderator_id"], minutes, now_iso(), data["reason"])
-        await target.send(embed=dm_embed, view=view)
-    except Exception:
-        pass
-
-    try:
-        p_type = data["type"]
-        minutes = data["duration"]
-        reason = f"Public Execution (Vote passed) - {data['reason']}"
-
-        if p_type == "ban":
-            await guild.ban(target, reason=reason)
-        elif p_type == "kick":
-            if not target_member:
-                raise ValueError("User is not in the server, cannot kick.")
-            await guild.kick(target_member, reason=reason)
-        elif p_type == "timeout":
-            if not target_member:
-                raise ValueError("User is not in the server, cannot timeout.")
-            await target_member.timeout(get_valid_duration(minutes), reason=reason)
-        elif p_type == "softban":
-            await guild.ban(target, reason=reason, delete_message_days=1)
-            await guild.unban(discord.Object(id=target.id), reason="Softban cleanup")
-
-        record = {
-            "reason": f"Public Execution: {data['reason']}",
-            "moderator": moderator.id if moderator else data["moderator_id"],
-            "duration_minutes": minutes,
-            "timestamp": now_iso(),
-            "escalated": data["escalated"],
-            "note": data["note"],
-            "user_msg": data["user_msg"],
-            "target_name": get_user_display_name(target),
-            "type": p_type,
-            "active": p_type == "ban",
-        }
-        record = await bot.data_manager.add_punishment(str(target.id), record)
-        case_label = get_case_label(record)
-
-        action_msg = "has been banned"
-        if p_type == "kick":
-            action_msg = "has been kicked"
-        elif p_type == "timeout":
-            action_msg = "has been timed out"
-        elif p_type == "warn":
-            action_msg = "has been warned"
-
-        await channel.send(f"{case_label}: {target.mention} {action_msg}.")
-
-        actor_ref = format_user_ref(moderator) if moderator else format_user_id_ref(data["moderator_id"])
-        log_embed = build_punishment_execution_log_embed(
-            guild=guild,
-            case_label=case_label,
-            actor=actor_ref,
-            target=format_user_ref(target),
-            record=record,
-            thumbnail=target.display_avatar.url,
-        )
-        log_embed.title = f"{case_label} Public Execution"
-        log_embed.description = "> A community vote threshold was reached and the configured action was executed."
-        log_embed.insert_field_at(2, name="Votes Reached", value=str(data["count"]), inline=True)
-        await send_punishment_log(guild, log_embed)
-    except Exception as e:
-        await channel.send(f"Execution failed: {e}")
 
 
 
@@ -1317,35 +760,12 @@ async def execute_public_execution_vote(
 
 
 
-async def log_case_management_action(
-    guild: discord.Guild,
-    actor: discord.Member,
-    target_user_id: str,
-    record: dict,
-    action: str,
-    details: str,
-):
-    detail_lines = [line.strip() for line in str(details or "").splitlines() if line.strip()]
-    embed = make_action_log_embed(
-        f"{get_case_label(record)} Updated",
-        "A case-management action modified the record metadata.",
-        guild=guild,
-        kind="info",
-        scope=SCOPE_MODERATION,
-        actor=format_user_ref(actor),
-        target=f"<@{target_user_id}> (`{target_user_id}`)",
-        reason=action,
-        duration="Record Updated",
-        expires="N/A",
-        notes=detail_lines or [f"Result: {truncate_text(details, 500)}"],
-    )
-    if record.get("action_id"):
-        embed.add_field(name="Action ID", value=f"`{record['action_id']}`", inline=True)
-    await send_punishment_log(guild, embed)
 
 
-def _split_case_input(value: str) -> List[str]:
-    return [part.strip() for part in re.split(r"[\n,]+", value or "") if part.strip()]
+
+
+
+
 
 
 
@@ -1453,138 +873,12 @@ def generate_transcript_html(messages, user):
 
 
 
-def get_mod_cases(mod_id: str) -> list:
-    cases = []
-    for uid, records in bot.data_manager.punishments.items():
-        for r in records:
-            if str(r.get("moderator")) == mod_id:
-                cases.append((uid, r))
-    return cases
-
-def get_staff_stats_embed(target: discord.Member, cases: list, reversals: int) -> discord.Embed:
-    total = len(cases)
-    
-    # Sort cases by timestamp (newest first) for calculations
-    sorted_cases = sorted(cases, key=lambda x: x[1].get("timestamp", ""), reverse=True)
-    
-    action_counter = Counter()
-    reasons = Counter()
-    timestamps = []
-
-    for uid, r in sorted_cases:
-        reasons[r.get("reason", "Unknown")] += 1
-        ts_str = r.get("timestamp")
-        if ts_str:
-            dt = iso_to_dt(ts_str)
-            if dt: timestamps.append(dt)
-
-        action_type = r.get("type")
-        if not action_type:
-            dur = r.get("duration_minutes", 0)
-            if dur == -1:
-                action_type = "ban"
-            elif dur == 0:
-                action_type = "warn"
-            else:
-                action_type = "timeout"
-        action_counter[action_type] += 1
-
-    embed = make_embed(
-        f"Staff Profile: {target.display_name}",
-        "> Moderation performance snapshot based on logged actions and reversals.",
-        kind="info",
-        scope=SCOPE_ANALYTICS,
-        guild=target.guild,
-        thumbnail=target.display_avatar.url,
-    )
-    if target.color != discord.Color.default():
-        embed.color = target.color
-
-    joined = discord.utils.format_dt(target.joined_at, "d") if target.joined_at else "Unknown"
-    roles_str = truncate_text(", ".join([r.mention for r in target.roles if not r.is_default()][-5:]) or "None", 1024)
-    embed.add_field(name="Member", value=format_user_ref(target), inline=True)
-    embed.add_field(name="Joined Server", value=joined, inline=True)
-    embed.add_field(name="Roles", value=roles_str, inline=False)
-
-    # Activity Overview
-    first_action = timestamps[-1] if timestamps else None
-    last_action = timestamps[0] if timestamps else None
-    
-    days_active = (last_action - first_action).days if (first_action and last_action) else 0
-    days_active = max(1, days_active)
-    
-    avg_daily = round(total / days_active, 2) if total > 0 else 0
-    reversal_rate = round((reversals / total) * 100, 1) if total > 0 else 0
-    
-    overview = (
-        f"**Total Actions:** `{total}`\n"
-        f"**Reversals:** `{reversals}` ({reversal_rate}%)\n"
-        f"**Avg Actions/Day:** `{avg_daily}`\n"
-        f"**First Action:** {discord.utils.format_dt(first_action, 'd') if first_action else 'N/A'}\n"
-        f"**Last Action:** {discord.utils.format_dt(last_action, 'R') if last_action else 'N/A'}"
-    )
-    now = discord.utils.utcnow()
-    embed.add_field(name="Performance Overview", value=f">>> {overview}", inline=False)
-
-    # Recent Activity
-    last_24h = sum(1 for t in timestamps if (now - t).days < 1)
-    last_7d = sum(1 for t in timestamps if (now - t).days < 7)
-    last_30d = sum(1 for t in timestamps if (now - t).days < 30)
-    
-    recent = (
-        f"**24 Hours:** `{last_24h}`\n"
-        f"**7 Days:** `{last_7d}`\n"
-        f"**30 Days:** `{last_30d}`"
-    )
-    embed.add_field(name="Recent Activity", value=f">>> {recent}", inline=True)
-
-    # Action Distribution (Visual)
-    if total > 0:
-        bans = action_counter.get("ban", 0)
-        timeouts = action_counter.get("timeout", 0)
-        warns = action_counter.get("warn", 0)
-        p_bans = bans / total
-        p_to = timeouts / total
-        p_warn = warns / total
-        
-        dist_desc = (
-            f"**Bans** ({bans})\n`{create_progress_bar(p_bans)}` {round(p_bans*100)}%\n"
-            f"**Timeouts** ({timeouts})\n`{create_progress_bar(p_to)}` {round(p_to*100)}%\n"
-            f"**Warnings** ({warns})\n`{create_progress_bar(p_warn)}` {round(p_warn*100)}%"
-        )
-        embed.add_field(name="Action Distribution", value=f">>> {dist_desc}", inline=False)
-    else:
-        embed.add_field(name="Action Distribution", value="> No data available.", inline=False)
-
-    # Top Reasons
-    if reasons:
-        top = reasons.most_common(5)
-        reason_lines = []
-        for r, c in top:
-            pct = (c / total) * 100
-            reason_lines.append(f"**{truncate_text(r, 60)}**: {c} ({round(pct)}%)")
-        embed.add_field(name="Most Common Violations", value=">>> " + "\n".join(reason_lines), inline=False)
-
-    return embed
 
 
 
 
 
-def build_test_env_embed():
-    debug = bot.data_manager.config.get("debug", {})
-    boost_status = "Enabled (Requirement Ignored)" if debug.get("bypass_boost") else "Disabled (Requirement Enforced)"
-    cd_status = "Enabled (No Cooldowns)" if debug.get("bypass_cooldown") else "Disabled (Standard Cooldowns)"
 
-    embed = make_embed(
-        "Test Environment Control",
-        "> Toggle debug-only flags used to validate premium and cooldown flows.",
-        kind="warning",
-        scope=SCOPE_SYSTEM,
-    )
-    embed.add_field(name="Boost Requirement Bypass", value=boost_status, inline=False)
-    embed.add_field(name="Cooldown Bypass", value=cd_status, inline=False)
-    return embed
 
 
 
@@ -1594,147 +888,20 @@ def build_test_env_embed():
 
 # ----------------- Modmail System -----------------
 
-async def log_modmail_action(guild, title, fields):
-    cid = bot.data_manager.config.get("modmail_action_log_channel")
-    if not cid: return
-    channel = guild.get_channel(cid)
-    if not channel: return
-
-    embed = make_embed(title, "> A staff action was performed on a modmail ticket.", kind="support", scope=SCOPE_SUPPORT, guild=guild)
-    for n, v in fields:
-        embed.add_field(name=n, value=v, inline=True)
-    try: await channel.send(embed=embed)
-    except Exception: pass
 
 
-def apply_modmail_ticket_state(embed: discord.Embed, ticket: dict, guild: discord.Guild) -> discord.Embed:
-    status = str(ticket.get("status", "open")).title()
-    priority = str(ticket.get("priority", "normal")).title()
-    tags = ", ".join(f"`{tag}`" for tag in ticket.get("tags", [])) or "None"
-    assigned = ticket.get("assigned_moderator")
-    assignee = f"<@{assigned}>" if assigned else "Unclaimed"
-    last_user = iso_to_dt(ticket.get("last_user_message_at"))
-    last_staff = iso_to_dt(ticket.get("last_staff_message_at"))
-
-    embed.color = EMBED_PALETTE["danger"] if ticket.get("status") == "closed" else (EMBED_PALETTE["warning"] if ticket.get("priority") in {"high", "urgent"} else EMBED_PALETTE["support"])
-    upsert_embed_field(embed, "Status", status, inline=True)
-    upsert_embed_field(embed, "Urgency", priority, inline=True)
-    upsert_embed_field(embed, "Assigned To", assignee, inline=True)
-    upsert_embed_field(
-        embed,
-        "Activity",
-        join_lines([
-            f"User: {discord.utils.format_dt(last_user, 'R') if last_user else 'Unknown'}",
-            f"Staff: {discord.utils.format_dt(last_staff, 'R') if last_staff else 'No reply yet'}",
-        ]),
-        inline=True,
-    )
-    upsert_embed_field(embed, "Tags", tags, inline=True)
-    brand_embed(embed, guild=guild, scope=SCOPE_SUPPORT)
-    return embed
 
 
-async def refresh_modmail_message(
-    message: Optional[discord.Message],
-    guild: Optional[discord.Guild],
-    user_id: str,
-    view: "ModmailControlView",
-) -> bool:
-    ticket = bot.data_manager.modmail.get(user_id)
-    if not ticket or message is None or not message.embeds or guild is None:
-        return False
-    view.sync_buttons(ticket)
-    embed = apply_modmail_ticket_state(message.embeds[0], ticket, guild)
-    try:
-        await message.edit(embed=embed, view=view)
-        return True
-    except discord.NotFound:
-        logger.warning("Modmail panel message for user %s no longer exists.", user_id)
-    except discord.Forbidden:
-        logger.warning("Missing permission to refresh modmail panel message for user %s.", user_id)
-    except discord.HTTPException as exc:
-        logger.warning("Failed to refresh modmail panel message for user %s: %s", user_id, exc)
-    return False
 
 
-async def refresh_modmail_ticket_log(guild: discord.Guild, user_id: str):
-    ticket = bot.data_manager.modmail.get(user_id)
-    if not ticket:
-        return
-    log_channel_id = bot.data_manager.config.get("modmail_inbox_channel")
-    log_id = ticket.get("log_id")
-    if not log_channel_id or not log_id:
-        return
-    channel = guild.get_channel(log_channel_id)
-    if not channel:
-        return
-    try:
-        message = await channel.fetch_message(log_id)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-        return
-    view = ModmailControlView(user_id)
-    view.message = message
-    await refresh_modmail_message(message, guild, user_id, view)
 
 
-async def export_modmail_transcript(thread: discord.Thread, user_id: str) -> discord.File:
-    messages = []
-    async for message in thread.history(limit=None, oldest_first=True):
-        messages.append({
-            "author_name": message.author.display_name,
-            "author_avatar_url": message.author.display_avatar.url,
-            "created_at": message.created_at,
-            "content": message.content,
-            "attachments": [{"filename": attachment.filename, "url": attachment.url} for attachment in message.attachments],
-            "channel_id": thread.id,
-            "deleted": False,
-            "edited": bool(message.edited_at),
-        })
-    transcript_user = SimpleNamespace(display_name=f"Ticket {user_id}", id=int(user_id))
-    html_content = generate_transcript_html(messages, transcript_user)
-    return discord.File(io.BytesIO(html_content.encode("utf-8")), filename=f"modmail_transcript_{user_id}.html")
 
 
-def _parse_user_id(value: Union[str, int, None]) -> Optional[int]:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
-async def resolve_modmail_user(user_id: Union[str, int, None]) -> Optional[discord.User]:
-    normalized_user_id = _parse_user_id(user_id)
-    if normalized_user_id is None:
-        return None
-    cached = bot.get_user(normalized_user_id)
-    if cached is not None:
-        return cached
-    try:
-        return await bot.fetch_user(normalized_user_id)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-        return None
 
 
-async def resolve_modmail_thread(guild: Optional[discord.Guild], ticket: Optional[dict]) -> Optional[discord.Thread]:
-    if not isinstance(ticket, dict):
-        return None
-
-    thread_id = _parse_user_id(ticket.get("thread_id"))
-    if thread_id is None:
-        return None
-
-    # Try guild cache first if guild is available
-    if guild is not None:
-        candidate = guild.get_thread(thread_id) or guild.get_channel_or_thread(thread_id)
-        if isinstance(candidate, discord.Thread):
-            return candidate
-
-    # Fall back to a global fetch — works without knowing the guild
-    try:
-        fetched = await bot.fetch_channel(thread_id)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-        return None
-    return fetched if isinstance(fetched, discord.Thread) else None
 
 
 
@@ -2814,53 +1981,6 @@ async def automod_cmd(interaction: discord.Interaction):
         return
     await interaction.response.send_message(embed=build_automod_dashboard_embed(interaction.guild), view=AutoModDashboardView(), ephemeral=True)
 
-def _build_branding_panel_embed(guild: discord.Guild) -> discord.Embed:
-    branding = _get_branding_config(guild.id)
-    member = guild.me
-    if member is None and getattr(bot, "user", None) is not None:
-        member = guild.get_member(bot.user.id)
-    current_display_name = getattr(member, "display_name", None) or getattr(bot.user, "name", None) or "Mysterious Bot X"
-    avatar_status = branding.get("avatar_url") or ("Set" if member and getattr(member, "guild_avatar", None) else None)
-    banner_status = branding.get("banner_url") or ("Set" if member and getattr(member, "guild_banner", None) else None)
-    bio_status = branding.get("bio")
-    footer_icon_status = "Server icon" if _get_footer_icon_url(guild) else None
-
-    embed = make_embed(
-        "Server Branding",
-        (
-            "> Manage the bot's server-specific profile and panel appearance.\n"
-            "> Display name uses the bot nickname for this server. Footer format is fixed to `Server Name • Area`."
-        ),
-        kind="neutral",
-        scope=SCOPE_SYSTEM,
-        guild=guild,
-    )
-    if member and getattr(member, "display_avatar", None):
-        embed.set_thumbnail(url=member.display_avatar.url)
-    if member and getattr(member, "guild_banner", None):
-        embed.set_image(url=member.guild_banner.url)
-
-    embed.add_field(name="Embed Color", value=_format_branding_panel_value(branding.get("embed_color")), inline=True)
-    embed.add_field(name="Display Name", value=_format_branding_panel_value(current_display_name), inline=True)
-    embed.add_field(
-        name="Display Name Override",
-        value=_format_branding_panel_value(branding.get("display_name")),
-        inline=True,
-    )
-    embed.add_field(name="Profile Bio", value=_format_branding_panel_value(bio_status), inline=True)
-    embed.add_field(name="Profile Avatar", value=_format_branding_panel_value(avatar_status), inline=True)
-    embed.add_field(name="Profile Banner", value=_format_branding_panel_value(banner_status), inline=True)
-    embed.add_field(name="Footer Preview", value=_format_branding_panel_value(_build_footer_text(SCOPE_SYSTEM, guild)), inline=True)
-    embed.add_field(name="Footer Icon", value=_format_branding_panel_value(footer_icon_status), inline=True)
-    embed.add_field(
-        name="How to edit",
-        value=(
-            "> Use the buttons below to update the bot profile for this server.\n"
-            "> Reset clears stored branding and removes the server-specific bot profile."
-        ),
-        inline=False,
-    )
-    return embed
 
 
 
