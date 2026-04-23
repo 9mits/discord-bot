@@ -305,8 +305,8 @@ Automod views/modals:
 
 ## Extraction order (safest → most entangled)
 
-1. **Phase 1 (this commit):** delete fake stub modules (`mbx_moderation.py`, `mbx_automod.py`, `mbx_modmail.py`, `mbx_roles.py`, `mbx_permissions.py`). Cogs import straight from `mbx_legacy`. No logic moved.
-2. **Phase 2:** extract `core/utils.py`, `core/images.py`, `core/logging.py`, `core/embeds.py`, `core/permissions.py`. These are leaves — nothing in `mbx_legacy` calls *out* to anything in here that it can't replace with an import.
+1. **Phase 1 (done):** delete fake stub modules (`mbx_moderation.py`, `mbx_automod.py`, `mbx_modmail.py`, `mbx_roles.py`, `mbx_permissions.py`, `mbx_logging.py`, `mbx_system.py`). Cogs import straight from `mbx_legacy`. No logic moved.
+2. **Phase 2 (partially done):** extract core leaves. Done: `2a` dedup helpers already in `mbx_utils.py`; `2b` → `mbx_embeds.py`; `2c` → `mbx_permissions.py` (new, real); `2d` → `mbx_logging.py` (new, real). Remaining: `core/utils.py` (consolidate dataclass parsers), `core/images.py`.
 3. **Phase 3:** extract `features/roles/` (fewest cross-domain deps — self-contained UI + commands).
 4. **Phase 4:** extract `features/automod/` (big but self-contained — has its own state, its own config).
 5. **Phase 5:** extract `features/modmail/` (touches logging, embeds, but shouldn't touch moderation).

@@ -73,6 +73,58 @@ from modules.mbx_services import (
     validate_guild_configuration,
 )
 from modules.mbx_context import abuse_system, bot, tree
+from modules.mbx_embeds import (
+    _build_footer_text,
+    _build_footer_text_with_detail,
+    _format_branding_panel_value,
+    _get_branding_config,
+    _get_footer_icon_url,
+    _set_footer_branding,
+    brand_embed,
+    fmt_channel,
+    fmt_role,
+    make_analytics_card,
+    make_confirmation_embed,
+    make_embed,
+    make_empty_state_embed,
+    make_error_embed,
+    upsert_embed_field,
+)
+from modules.mbx_logging import (
+    LOG_NONINLINE_FIELD_NAMES,
+    LOG_QUOTE_FIELD_NAMES,
+    _send_log_to_channels,
+    build_log_detail_fields,
+    format_log_field_value,
+    format_log_notes,
+    format_log_quote,
+    format_plain_log_block,
+    format_reason_value,
+    get_general_log_channel_id,
+    get_general_log_channel_ids,
+    get_punishment_log_channel_id,
+    get_punishment_log_channel_ids,
+    make_action_log_embed,
+    normalize_log_embed,
+    normalize_log_field_name,
+    send_automod_log,
+    send_log,
+    send_punishment_log,
+)
+from modules.mbx_permissions import (
+    DANGEROUS_PERMISSIONS,
+    check_admin,
+    check_owner,
+    get_context_guild,
+    get_primary_guild,
+    has_dangerous_perm,
+    has_permission_capability,
+    is_staff,
+    is_staff_member,
+    requires_setup,
+    resolve_member,
+    respond_with_error,
+)
 from modules.mbx_utils import (
     create_progress_bar,
     extract_snowflake_id,
@@ -204,17 +256,6 @@ def calculate_smart_punishment(user_id: str, reason: str, rules: dict, history: 
     return duration, True, f"{label} ({context})"
 
 # ----------------- Security & Utils -----------------
-DANGEROUS_PERMISSIONS = {
-    "administrator",
-    "manage_guild",
-    "manage_roles",
-    "manage_channels",
-    "ban_members",
-    "kick_members",
-    "manage_webhooks",
-    "mention_everyone"
-}
-
 ROLE_ICON_MAX_BYTES = 256000
 PROFILE_BRANDING_MAX_BYTES = 8 * 1024 * 1024
 MAX_GUILD_MEMBER_BIO_LENGTH = 190
@@ -222,12 +263,6 @@ MODMAIL_RELAY_MAX_FILES = 5
 MODMAIL_RELAY_MAX_FILE_BYTES = 8 * 1024 * 1024
 MODMAIL_RELAY_MAX_TOTAL_BYTES = 20 * 1024 * 1024
 BRANDING_UNSET = object()
-
-def has_dangerous_perm(perms: discord.Permissions) -> bool:
-    for p in DANGEROUS_PERMISSIONS:
-        if getattr(perms, p, False):
-            return True
-    return False
 
 # ----------------- Utility functions -----------------
 def get_custom_role_limit(member: discord.Member) -> int:
@@ -490,54 +525,6 @@ async def send_modmail_thread_intro(thread: discord.Thread, user, category: str,
 
     await thread.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
-def format_log_quote(value: Optional[str], *, limit: int = 1000) -> str:
-    text = truncate_text(str(value or "None").strip(), limit)
-    return f">>> {text}" if text else ">>> None"
-
-
-def format_plain_log_block(*lines: Optional[str], limit: int = 1000) -> str:
-    cleaned: List[str] = []
-    for line in lines:
-        for raw_part in str(line or "").splitlines():
-            value = raw_part.strip()
-            if not value:
-                continue
-            if value.startswith(">>>"):
-                value = value[3:].strip()
-            elif value.startswith("> "):
-                value = value[2:].strip()
-            elif value.startswith(">"):
-                value = value[1:].strip()
-            if value:
-                cleaned.append(value)
-    if not cleaned:
-        return "None"
-    return truncate_text("\n".join(cleaned), limit)
-
-
-def format_reason_value(value: Optional[str], *, limit: int = 1000) -> str:
-    text = truncate_text(str(value or "None").strip(), limit)
-    if not text:
-        return "> None"
-    if text.startswith(">"):
-        return text
-    return f"> {text}"
-
-
-def format_log_notes(*lines: Optional[str], limit: int = 1000) -> str:
-    cleaned = []
-    for line in lines:
-        value = str(line or "").strip()
-        if not value:
-            continue
-        if value.startswith("- ") or value.startswith("> "):
-            value = value[2:]
-        cleaned.append(value)
-    if not cleaned:
-        return "> None"
-    return truncate_text("\n".join(f"> {line}" for line in cleaned), limit)
-
-
 class ExpirableMixin:
     """
     Mixin for discord.ui.View subclasses.
@@ -586,423 +573,9 @@ UNDO_REASON_PRESETS = [
 UNDO_REASON_PRESET_MAP = {preset["value"]: preset for preset in UNDO_REASON_PRESETS}
 
 
-LOG_QUOTE_FIELD_NAMES = {
-    "message",
-    "blocked message",
-    "flagged message",
-    "appeal statement",
-    "original violation",
-    "internal note",
-    "message to user",
-    "user report",
-    "extra context",
-    "details",
-}
-LOG_NONINLINE_FIELD_NAMES = {
-    "message",
-    "blocked message",
-    "flagged message",
-    "appeal statement",
-    "original violation",
-    "internal note",
-    "message to user",
-    "user report",
-    "extra context",
-    "escalation",
-    "result",
-    "reason template",
-    "actions",
-    "trigger",
-}
-
-
-def normalize_log_field_name(name: str) -> str:
-    parts = []
-    for raw_part in str(name or "Detail").strip().split():
-        part = raw_part.strip()
-        if not part:
-            continue
-        lowered = part.lower()
-        if lowered in {"id", "dm", "sla", "url"}:
-            parts.append(lowered.upper())
-        else:
-            parts.append(part[0].upper() + part[1:])
-    return truncate_text(" ".join(parts) or "Detail", 256)
-
-
-def format_log_field_value(name: str, value: Optional[str], *, limit: int = 1024) -> str:
-    field_name = str(name or "").strip().lower()
-    text = truncate_text(str(value or "None").strip() or "None", limit if field_name not in LOG_QUOTE_FIELD_NAMES else min(limit, 950))
-    if field_name in LOG_QUOTE_FIELD_NAMES:
-        return format_log_quote(text, limit=min(limit, 950))
-    return text
-
-
-def build_log_detail_fields(*lines: Optional[str], limit: int = 8) -> List[Tuple[str, str, bool]]:
-    detail_fields = []
-    for line in lines:
-        value = str(line or "").strip()
-        if not value:
-            continue
-        value = value[2:] if value.startswith("- ") else value
-        if ":" in value:
-            name, detail_value = value.split(":", 1)
-            name = normalize_log_field_name(name)
-            detail_value = detail_value.strip() or "None"
-        else:
-            name = "Detail"
-            detail_value = value
-        lowered = name.lower()
-        formatted_value = format_log_field_value(name, detail_value)
-        inline = len(str(detail_value)) <= 80 and lowered not in LOG_NONINLINE_FIELD_NAMES
-        detail_fields.append((name, formatted_value, inline))
-        if len(detail_fields) >= limit:
-            break
-    return detail_fields
-
-
-def make_action_log_embed(
-    title: str,
-    description: str,
-    *,
-    guild: discord.Guild,
-    kind: str = "info",
-    scope: str = SCOPE_MODERATION,
-    actor: Optional[str] = None,
-    target: Optional[str] = None,
-    reason: Optional[str] = None,
-    duration: Optional[str] = None,
-    expires: Optional[str] = None,
-    message: Optional[str] = None,
-    notes: Optional[List[str]] = None,
-    thumbnail: Optional[str] = None,
-    author_name: Optional[str] = None,
-    author_icon: Optional[str] = None,
-) -> discord.Embed:
-    embed = make_embed(
-        title,
-        description if description.startswith(">") else f"> {description}",
-        kind=kind,
-        scope=scope,
-        guild=guild,
-        thumbnail=thumbnail,
-        author_name=author_name,
-        author_icon=author_icon,
-    )
-    if actor:
-        embed.add_field(name="Actor", value=actor, inline=True)
-    if target:
-        embed.add_field(name="Target", value=target, inline=True)
-    if reason:
-        embed.add_field(name="Reason", value=format_reason_value(reason, limit=500), inline=False)
-    if duration:
-        embed.add_field(name="Duration", value=duration, inline=True)
-    if expires:
-        embed.add_field(name="Expires", value=expires, inline=True)
-    if message:
-        embed.add_field(name="Message", value=format_log_quote(message, limit=900), inline=False)
-    if notes:
-        for detail_name, detail_value, detail_inline in build_log_detail_fields(*notes):
-            embed.add_field(name=detail_name, value=detail_value, inline=detail_inline)
-    return embed
-
-
-def normalize_log_embed(embed: discord.Embed, *, guild: Optional[discord.Guild] = None) -> discord.Embed:
-    payload = embed.to_dict()
-    description = payload.get("description")
-    if description and not str(description).startswith(">"):
-        payload["description"] = f"> {description}"
-
-    normalized_fields = []
-    for field in payload.get("fields", []):
-        name = str(field.get("name", ""))
-        value = str(field.get("value", ""))
-        lowered = name.lower()
-        if lowered == "reason":
-            field["value"] = truncate_text(format_reason_value(value, limit=950), 1024)
-            field["inline"] = False
-            normalized_fields.append(field)
-            continue
-        if lowered in LOG_QUOTE_FIELD_NAMES:
-            stripped = value.strip()
-            if not stripped.startswith((">>>", "```")):
-                value = format_log_field_value(name, stripped)
-            field["value"] = truncate_text(value, 1024)
-            normalized_fields.append(field)
-            continue
-        if lowered == "notes":
-            detail_fields = build_log_detail_fields(*[line.strip() for line in value.splitlines() if line.strip()], limit=10)
-            if detail_fields:
-                for detail_name, detail_value, detail_inline in detail_fields:
-                    normalized_fields.append({
-                        "name": detail_name,
-                        "value": truncate_text(detail_value, 1024),
-                        "inline": detail_inline,
-                    })
-                continue
-        field["value"] = truncate_text(value, 1024)
-        normalized_fields.append(field)
-    payload["fields"] = normalized_fields
-
-    normalized = discord.Embed.from_dict(payload)
-    footer = embed.footer
-    if guild is not None:
-        _set_footer_branding(
-            normalized,
-            footer.text if footer and footer.text else _build_footer_text(SCOPE_SYSTEM, guild),
-            guild,
-        )
-    elif footer and footer.text:
-        normalized.set_footer(text=footer.text, icon_url=footer.icon_url)
-    else:
-        brand_embed(normalized, guild=guild)
-    if embed.author and embed.author.name:
-        normalized.set_author(name=embed.author.name, icon_url=embed.author.icon_url)
-    if embed.thumbnail and embed.thumbnail.url:
-        normalized.set_thumbnail(url=embed.thumbnail.url)
-    if embed.image and embed.image.url:
-        normalized.set_image(url=embed.image.url)
-    return normalized
-
-
-def get_general_log_channel_ids(config: Optional[dict] = None) -> List[int]:
-    config = config or bot.data_manager.config
-    channel_ids: List[int] = []
-    for raw_channel_id in (
-        config.get("general_log_channel_id"),
-        config.get("log_channel_id"),
-    ):
-        if not raw_channel_id:
-            continue
-        try:
-            channel_id = int(raw_channel_id)
-        except (TypeError, ValueError):
-            continue
-        if channel_id not in channel_ids:
-            channel_ids.append(channel_id)
-    return channel_ids
-
-
-def get_general_log_channel_id(config: Optional[dict] = None) -> Optional[int]:
-    channel_ids = get_general_log_channel_ids(config)
-    return channel_ids[0] if channel_ids else None
-
-
-def get_punishment_log_channel_ids(config: Optional[dict] = None) -> List[int]:
-    config = config or bot.data_manager.config
-    channel_ids: List[int] = []
-    for raw_channel_id in (
-        config.get("punishment_log_channel_id"),
-        *get_general_log_channel_ids(config),
-    ):
-        if not raw_channel_id:
-            continue
-        try:
-            channel_id = int(raw_channel_id)
-        except (TypeError, ValueError):
-            continue
-        if channel_id not in channel_ids:
-            channel_ids.append(channel_id)
-    return channel_ids
-
-
-def get_punishment_log_channel_id(config: Optional[dict] = None) -> Optional[int]:
-    channel_ids = get_punishment_log_channel_ids(config)
-    return channel_ids[0] if channel_ids else None
-
-
-async def _send_log_to_channels(
-    guild: discord.Guild,
-    channel_ids: List[int],
-    embed: discord.Embed,
-    *,
-    content: Optional[str] = None,
-    view: Optional[discord.ui.View] = None,
-    attachments: Optional[List[Tuple[str, bytes]]] = None,
-    log_label: str = "log",
-) -> bool:
-    if not channel_ids:
-        return False
-
-    normalized_embed = normalize_log_embed(embed, guild=guild)
-    for channel_id in channel_ids:
-        channel = guild.get_channel_or_thread(channel_id) or guild.get_channel(channel_id)
-        if channel is None:
-            logger.warning("Configured %s channel %s was not found in guild %s.", log_label, channel_id, guild.id)
-            continue
-        try:
-            files = None
-            if attachments:
-                files = [discord.File(io.BytesIO(data), filename=filename) for filename, data in attachments]
-            await channel.send(content=content, embed=normalized_embed, view=view, files=files)
-            return True
-        except Exception as exc:
-            logger.warning("Failed to send %s to channel %s: %s", log_label, channel_id, exc)
-    return False
-
-
-async def send_log(
-    guild: discord.Guild,
-    embed: discord.Embed,
-    content: str = None,
-    view: discord.ui.View = None,
-    attachments: Optional[List[Tuple[str, bytes]]] = None,
-):
-    await _send_log_to_channels(
-        guild,
-        get_general_log_channel_ids(),
-        embed,
-        content=content,
-        view=view,
-        attachments=attachments,
-        log_label="general log",
-    )
-
-
-async def send_punishment_log(
-    guild: discord.Guild,
-    embed: discord.Embed,
-    content: str = None,
-    view: discord.ui.View = None,
-    attachments: Optional[List[Tuple[str, bytes]]] = None,
-):
-    await _send_log_to_channels(
-        guild,
-        get_punishment_log_channel_ids(),
-        embed,
-        content=content,
-        view=view,
-        attachments=attachments,
-        log_label="punishment log",
-    )
-
 def get_valid_duration(minutes: int) -> timedelta:
     # Discord max timeout is 28 days (40320 minutes)
     return timedelta(minutes=min(minutes, 40320))
-
-def has_permission_capability(interaction: discord.Interaction, capability: str) -> bool:
-    return has_capability(
-        [role.id for role in interaction.user.roles],
-        capability,
-        bot.data_manager.config,
-        administrator=interaction.user.guild_permissions.administrator,
-        user_id=interaction.user.id,
-        guild_owner_id=interaction.guild.owner_id if interaction.guild else None,
-    )
-
-
-async def respond_with_error(interaction: discord.Interaction, message: str, *, scope: str = SCOPE_SYSTEM):
-    embed = make_error_embed("Request Failed", f"> {message}", scope=scope, guild=interaction.guild)
-    if not interaction.response.is_done():
-        await interaction.response.send_message(embed=embed, ephemeral=True)
-    else:
-        await interaction.followup.send(embed=embed, ephemeral=True)
-
-
-def is_staff_member(member: discord.Member) -> bool:
-    conf = bot.data_manager.config
-    allowed = {
-        r for r in (
-            conf.get("role_mod"),
-            conf.get("role_admin"),
-            conf.get("role_owner"),
-            conf.get("role_community_manager"),
-        ) if r
-    }
-    if allowed and any(role.id in allowed for role in member.roles):
-        return True
-    mod_roles = bot.data_manager.config.get("mod_roles", [])
-    if any(role.id in mod_roles for role in member.roles):
-        return True
-    return member.guild_permissions.moderate_members
-
-
-def is_staff(interaction: discord.Interaction) -> bool:
-    if has_permission_capability(interaction, "case_panel"):
-        return True
-    mod_roles = bot.data_manager.config.get("mod_roles", [])
-    if any(r.id in mod_roles for r in interaction.user.roles):
-        return True
-    return interaction.user.guild_permissions.moderate_members
-
-
-async def resolve_member(guild: discord.Guild, user_id: int) -> Optional[discord.Member]:
-    member = guild.get_member(user_id)
-    if member:
-        return member
-
-    try:
-        return await guild.fetch_member(user_id)
-    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-        return None
-
-
-def fmt_role(guild: Optional[discord.Guild], role_id: Optional[int]) -> str:
-    """Format a role mention, or 'Not set' if the role doesn't exist in the guild."""
-    if not role_id:
-        return "Not set"
-    if guild is not None:
-        role = guild.get_role(int(role_id))
-        if role is None:
-            return "Not set"
-    return f"<@&{role_id}>"
-
-
-def fmt_channel(guild: Optional[discord.Guild], channel_id: Optional[int]) -> str:
-    """Format a channel mention, or 'Not set' if the channel doesn't exist."""
-    if not channel_id:
-        return "Not set"
-    if guild is not None:
-        ch = guild.get_channel(int(channel_id))
-        if ch is None:
-            return "Not set"
-    return f"<#{channel_id}>"
-
-
-def _get_branding_config(guild_id: int) -> Dict[str, Any]:
-    if getattr(bot, "data_manager", None) is None:
-        return {}
-    return bot.data_manager._configs.get(guild_id, {}).get("_branding", {})
-
-
-def _build_footer_text(scope: str, guild: Optional[discord.Guild]) -> str:
-    """Build footer text with the current guild name first, then the scope."""
-    parts = [guild.name if guild is not None else BRAND_NAME, scope]
-    return " • ".join(parts)
-
-
-def _build_footer_text_with_detail(scope: str, guild: Optional[discord.Guild], detail: Optional[str]) -> str:
-    base_text = _build_footer_text(scope, guild)
-    detail_text = str(detail or "").strip()
-    return f"{base_text} • {detail_text}" if detail_text else base_text
-
-
-def _get_footer_icon_url(guild: Optional[discord.Guild]) -> Optional[str]:
-    if guild and getattr(guild, "icon", None):
-        return guild.icon.url
-    return None
-
-
-def _set_footer_branding(embed: discord.Embed, text: str, guild: Optional[discord.Guild]) -> discord.Embed:
-    icon_url = _get_footer_icon_url(guild)
-    if icon_url:
-        embed.set_footer(text=text, icon_url=icon_url)
-    else:
-        embed.set_footer(text=text)
-    return embed
-
-
-def _format_branding_panel_value(
-    value: Optional[str],
-    *,
-    empty: str = "Not set",
-    limit: int = 60,
-) -> str:
-    clean = str(value or "").strip()
-    if not clean:
-        return f"`{empty}`"
-    return f"`{truncate_text(clean, limit)}`"
-
 
 async def _refresh_branding_panel(interaction: discord.Interaction) -> None:
     embed = _build_branding_panel_embed(interaction.guild)
@@ -1085,107 +658,9 @@ def build_branding_error_embed(guild: Optional[discord.Guild], detail: str) -> d
     return make_error_embed("Branding Update Failed", f"> {detail}", scope=SCOPE_SYSTEM, guild=guild)
 
 
-def make_embed(
-    title: str,
-    description: Optional[str] = None,
-    *,
-    kind: str = "neutral",
-    scope: str = SCOPE_SYSTEM,
-    guild: Optional[discord.Guild] = None,
-    thumbnail: Optional[str] = None,
-    author_name: Optional[str] = None,
-    author_icon: Optional[str] = None,
-) -> discord.Embed:
-    color = EMBED_PALETTE.get(kind, EMBED_PALETTE["neutral"])
-
-    # Per-guild custom embed color
-    if guild is not None and getattr(bot, "data_manager", None) is not None:
-        try:
-            hex_color = (
-                bot.data_manager._configs.get(guild.id, {})
-                .get("_branding", {})
-                .get("embed_color")
-            )
-            if hex_color:
-                color = discord.Color(int(str(hex_color).lstrip("#"), 16))
-        except Exception:
-            pass
-
-    footer_text = _build_footer_text(scope, guild)
-    embed = discord.Embed(title=title, description=description, color=color)
-    embed.timestamp = discord.utils.utcnow()
-    _set_footer_branding(embed, footer_text, guild)
-    if thumbnail:
-        embed.set_thumbnail(url=thumbnail)
-    if author_name:
-        embed.set_author(name=author_name, icon_url=author_icon)
-    return embed
-
-
-def brand_embed(
-    embed: discord.Embed,
-    *,
-    guild: Optional[discord.Guild] = None,
-    scope: str = SCOPE_SYSTEM,
-) -> discord.Embed:
-    embed.timestamp = discord.utils.utcnow()
-    footer_text = _build_footer_text(scope, guild)
-    _set_footer_branding(embed, footer_text, guild)
-    return embed
-
-
-def make_empty_state_embed(
-    title: str,
-    description: str,
-    *,
-    scope: str = SCOPE_SYSTEM,
-    guild: Optional[discord.Guild] = None,
-    thumbnail: Optional[str] = None,
-) -> discord.Embed:
-    return make_embed(title, description, kind="muted", scope=scope, guild=guild, thumbnail=thumbnail)
-
-
-def make_error_embed(
-    title: str,
-    description: str,
-    *,
-    scope: str = SCOPE_SYSTEM,
-    guild: Optional[discord.Guild] = None,
-) -> discord.Embed:
-    return make_embed(title, description, kind="danger", scope=scope, guild=guild)
-
-
-def make_confirmation_embed(
-    title: str,
-    description: str,
-    *,
-    scope: str = SCOPE_SYSTEM,
-    guild: Optional[discord.Guild] = None,
-    thumbnail: Optional[str] = None,
-) -> discord.Embed:
-    return make_embed(title, description, kind="success", scope=scope, guild=guild, thumbnail=thumbnail)
-
-
-def make_analytics_card(
-    title: str,
-    *,
-    description: Optional[str] = None,
-    guild: Optional[discord.Guild] = None,
-) -> discord.Embed:
-    return make_embed(title, description, kind="analytics", scope=SCOPE_ANALYTICS, guild=guild)
-
-
 def join_lines(lines: List[str], fallback: str = "None") -> str:
     rendered = [line for line in lines if line]
     return "\n".join(rendered) if rendered else fallback
-
-
-def upsert_embed_field(embed: discord.Embed, name: str, value: str, *, inline: bool = False):
-    for index, field in enumerate(embed.fields):
-        if field.name == name:
-            embed.set_field_at(index, name=name, value=value, inline=inline)
-            return
-    embed.add_field(name=name, value=value, inline=inline)
 
 
 def get_modal_item_label(item: discord.ui.Item) -> str:
@@ -1217,20 +692,6 @@ def format_user_id_ref(user_id: Union[int, str], *, fallback_name: Optional[str]
         if clean_name:
             prefix = f"{clean_name} • "
     return f"{prefix}<@{user_id}> (`{user_id}`)"
-
-
-def get_primary_guild() -> Optional[discord.Guild]:
-    """Return the guild that owns the current data_manager context, if any."""
-    if not getattr(bot, "data_manager", None):
-        return None
-    guild_id = bot.data_manager._current_guild_id
-    if guild_id:
-        return bot.get_guild(int(guild_id))
-    return None
-
-
-def get_context_guild(interaction: discord.Interaction) -> Optional[discord.Guild]:
-    return interaction.guild or get_primary_guild()
 
 
 async def send_modmail_panel_message(
@@ -1289,33 +750,6 @@ async def maybe_send_dm_modmail_panel(user: discord.User, *, guild: Optional[dis
     bot.dm_modmail_prompt_cooldowns[cooldown_key] = now_ts
     return True
 
-
-async def send_automod_log(
-    guild: discord.Guild,
-    embed: discord.Embed,
-    *,
-    content: Optional[str] = None,
-    preferred_channel_id: Optional[int] = None,
-):
-    candidate_ids = []
-    for raw_channel_id in (
-        preferred_channel_id,
-        bot.data_manager.config.get("automod_log_channel_id"),
-        *get_punishment_log_channel_ids(),
-    ):
-        if not raw_channel_id:
-            continue
-        channel_id = int(raw_channel_id)
-        if channel_id not in candidate_ids:
-            candidate_ids.append(channel_id)
-
-    await _send_log_to_channels(
-        guild,
-        candidate_ids,
-        embed,
-        content=content,
-        log_label="automod log",
-    )
 
 def get_case_id(record: dict) -> Optional[int]:
     case_id = record.get("case_id")
@@ -9218,23 +8652,7 @@ class SetupDashboardView(ExpirableMixin, discord.ui.View):
         self.add_item(ConfigTypeSelect("channels", row=1))
         self.add_item(SetupDashboardActionSelect())
 
-# --- Permission Checks ---
-def check_admin(interaction: discord.Interaction) -> bool:
-    return has_permission_capability(interaction, "setup_panel")
-
-def check_owner(interaction: discord.Interaction) -> bool:
-    return has_permission_capability(interaction, "owner_panel")
-
-def requires_setup(interaction: discord.Interaction) -> bool:
-    """app_commands.check: rejects commands if the guild hasn't run /setup."""
-    if not interaction.guild_id:
-        return True
-    cfg = {}
-    if getattr(bot, "data_manager", None):
-        cfg = bot.data_manager._configs.get(interaction.guild_id, {})
-    if not cfg.get("_setup_complete", False):
-        raise app_commands.CheckFailure("guild_not_configured")
-    return True
+# --- Permission Checks live in modules.mbx_permissions (re-exported above) ---
 
 _CMD_CATEGORIES = {
     "Moderation":  {"mod", "punish", "history", "case", "active", "undopunish", "clear", "lock", "unlock"},
