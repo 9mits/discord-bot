@@ -181,8 +181,13 @@ class MGXBot(commands.Bot):
             return
 
         blacklisted = await self.data_manager.get_blacklisted_guilds()
+        db_whitelist = await self.data_manager.get_whitelisted_guilds()
+        whitelist_enforced = bool(WHITELISTED_GUILDS) or bool(db_whitelist)
+        allowed_by_whitelist = (
+            guild.id in WHITELISTED_GUILDS or guild.id in db_whitelist
+        )
         rejected = guild.id in blacklisted or (
-            bool(WHITELISTED_GUILDS) and guild.id not in WHITELISTED_GUILDS
+            whitelist_enforced and not allowed_by_whitelist
         )
 
         if rejected:

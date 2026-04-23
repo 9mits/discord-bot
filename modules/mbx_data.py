@@ -587,6 +587,10 @@ class DataManager:
                 guild_id       INTEGER PRIMARY KEY,
                 blacklisted_at TEXT    NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS bot_whitelist (
+                guild_id       INTEGER PRIMARY KEY,
+                whitelisted_at TEXT    NOT NULL
+            );
         """)
         await self._db.commit()
 
@@ -786,6 +790,21 @@ class DataManager:
 
     async def unblacklist_guild(self, guild_id: int) -> None:
         await self._db.execute("DELETE FROM bot_blacklist WHERE guild_id=?", (guild_id,))
+        await self._db.commit()
+
+    async def get_whitelisted_guilds(self) -> Set[int]:
+        async with self._db.execute("SELECT guild_id FROM bot_whitelist") as cur:
+            return {row[0] async for row in cur}
+
+    async def whitelist_guild(self, guild_id: int) -> None:
+        await self._db.execute(
+            "INSERT OR REPLACE INTO bot_whitelist (guild_id, whitelisted_at) VALUES (?, ?)",
+            (guild_id, discord.utils.utcnow().isoformat()),
+        )
+        await self._db.commit()
+
+    async def unwhitelist_guild(self, guild_id: int) -> None:
+        await self._db.execute("DELETE FROM bot_whitelist WHERE guild_id=?", (guild_id,))
         await self._db.commit()
 
     # ------------------------------------------------------------------ #

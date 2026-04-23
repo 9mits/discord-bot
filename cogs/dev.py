@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Optional
 
@@ -19,6 +20,45 @@ from discord.ext import commands
 
 from modules.mbx_constants import BOT_OWNER_IDS, DEV_GUILD_ID
 from modules.mbx_utils import truncate_text
+
+_INVITE_PATTERN = re.compile(
+    r"(?:https?://)?(?:www\.)?(?:discord(?:app)?\.com/invite|discord\.gg)/([A-Za-z0-9-]+)",
+    re.IGNORECASE,
+)
+
+
+async def _resolve_guild_id(
+    bot: commands.Bot, value: str
+) -> tuple[Optional[int], Optional[str], Optional[str]]:
+    """Resolve a raw guild ID or an invite URL/code into (guild_id, guild_name, error)."""
+    value = value.strip()
+    if value.isdigit():
+        gid = int(value)
+        guild = bot.get_guild(gid)
+        return gid, (guild.name if guild else None), None
+
+    match = _INVITE_PATTERN.search(value)
+    code = match.group(1) if match else value
+    try:
+        invite = await bot.fetch_invite(code, with_counts=False, with_expiration=False)
+    except discord.NotFound:
+        return None, None, "Invite not found or expired."
+    except discord.HTTPException as exc:
+        return None, None, f"Failed to resolve invite: {exc}"
+
+    if invite.guild is None:
+        return None, None, "Invite does not point to a guild."
+    return invite.guild.id, getattr(invite.guild, "name", None), None
+
+
+def _build_bot_invite(bot: commands.Bot, guild_id: Optional[int] = None) -> str:
+    perms = discord.Permissions(administrator=True)
+    return discord.utils.oauth_url(
+        bot.user.id,
+        permissions=perms,
+        scopes=("bot", "applications.commands"),
+        guild=discord.Object(id=guild_id) if guild_id else None,
+    )
 
 logger = logging.getLogger("MGXBot")
 
@@ -157,6 +197,64 @@ class DevCog(commands.Cog):
             await self.bot.data_manager.unblacklist_guild(gid)
         await interaction.followup.send(
             f"Guild `{guild_id}` removed from the blacklist.", ephemeral=True
+        )
+
+    @dev.command(
+        name="whitelist",
+        description="Whitelist a guild (by ID or invite URL) and get a bot invite link",
+    )
+    @app_commands.describe(target="Guild ID or invite URL (discord.gg/xxxx)")
+    async def dev_whitelist(self, interaction: discord.Interaction, target: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+        dm = self.bot.data_manager
+        if not dm:
+            await interaction.followup.send("DataManager not ready.", ephemeral=True)
+            return
+
+        gid, gname, err = await _resolve_guild_id(self.bot, target)
+        if err or gid is None:
+            await interaction.followup.send(err or "Could not resolve target.", ephemeral=True)
+            return
+
+        blacklisted = await dm.get_blacklisted_guilds()
+        if gid in blacklisted:
+            await interaction.followup.send(
+                f"Guild `{gid}` is blacklisted. Use `/dev unblacklist` first.",
+                ephemeral=True,
+            )
+            return
+
+        await dm.whitelist_guild(gid)
+        invite_url = _build_bot_invite(self.bot, guild_id=gid)
+
+        name_line = f"**{gname}** (`{gid}`)" if gname else f"`{gid}`"
+        await interaction.followup.send(
+            f"Whitelisted {name_line}.\n**Invite:** {invite_url}",
+            ephemeral=True,
+        )
+
+    @dev.command(
+        name="unwhitelist",
+        description="Remove a guild (by ID or invite URL) from the whitelist",
+    )
+    @app_commands.describe(target="Guild ID or invite URL (discord.gg/xxxx)")
+    async def dev_unwhitelist(self, interaction: discord.Interaction, target: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+        dm = self.bot.data_manager
+        if not dm:
+            await interaction.followup.send("DataManager not ready.", ephemeral=True)
+            return
+
+        gid, gname, err = await _resolve_guild_id(self.bot, target)
+        if err or gid is None:
+            await interaction.followup.send(err or "Could not resolve target.", ephemeral=True)
+            return
+
+        await dm.unwhitelist_guild(gid)
+        name_line = f"**{gname}** (`{gid}`)" if gname else f"`{gid}`"
+        await interaction.followup.send(
+            f"Removed {name_line} from the whitelist.",
+            ephemeral=True,
         )
 
     @dev.command(name="broadcast", description="Send a message to every guild's configured log channel")
