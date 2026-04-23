@@ -22,7 +22,6 @@ from modules.mbx_legacy import (
     setup,
     stats,
     status_cmd,
-    sync,
     unarchive,
     unlockdown,
 )
@@ -49,7 +48,6 @@ __all__ = [
     "setup",
     "stats",
     "status_cmd",
-    "sync",
     "unarchive",
     "unlockdown",
 ]

@@ -21,7 +21,6 @@ async def setup(bot) -> None:
     bot.tree.add_command(mbx_system.lockdown)
     bot.tree.add_command(mbx_system.unlockdown)
     bot.tree.add_command(mbx_system.status_cmd)
-    bot.add_command(mbx_system.sync)
     bot.add_listener(mbx_system.on_guild_role_update)
     bot.add_listener(mbx_system.on_member_update)
     bot.add_listener(mbx_system.on_message)
