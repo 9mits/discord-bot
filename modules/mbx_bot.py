@@ -394,8 +394,7 @@ class MGXBot(commands.Bot):
                 logger.error("role_cleanup_task failed for guild %s: %s", gid, exc)
 
     async def _role_cleanup_for_guild(self, guild_id: int, guild: discord.Guild) -> None:
-        from modules.mbx_logging import send_log
-        from modules.mbx_roles import get_custom_role_limit
+        from modules.mbx_legacy import get_custom_role_limit, send_log
         from ui.shared import format_reason_value, make_embed
 
         # Set context so send_log reads the right guild config

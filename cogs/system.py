@@ -1,28 +1,28 @@
 from __future__ import annotations
 
-from modules import mbx_system
+from modules import mbx_legacy
 
 
 async def setup(bot) -> None:
-    bot.tree.add_command(mbx_system.branding_cmd)
-    bot.tree.add_command(mbx_system.list_commands)
-    bot.tree.add_command(mbx_system.stats)
-    bot.tree.add_command(mbx_system.directory)
-    bot.tree.add_command(mbx_system.setup)
-    bot.tree.add_command(mbx_system.config_cmd)
-    bot.tree.add_command(mbx_system.publicexecution)
-    bot.tree.add_command(mbx_system.internals)
-    bot.tree.add_command(mbx_system.archive)
-    bot.tree.add_command(mbx_system.unarchive)
-    bot.tree.add_command(mbx_system.clone)
-    bot.tree.add_command(mbx_system.rules)
-    bot.tree.add_command(mbx_system.safety_panel)
-    bot.tree.add_command(mbx_system.access)
-    bot.tree.add_command(mbx_system.lockdown)
-    bot.tree.add_command(mbx_system.unlockdown)
-    bot.tree.add_command(mbx_system.status_cmd)
-    bot.add_listener(mbx_system.on_guild_role_update)
-    bot.add_listener(mbx_system.on_member_update)
-    bot.add_listener(mbx_system.on_message)
-    bot.add_listener(mbx_system.on_ready)
-    bot.tree.on_error = mbx_system.on_app_command_error
+    bot.tree.add_command(mbx_legacy.branding_cmd)
+    bot.tree.add_command(mbx_legacy.list_commands)
+    bot.tree.add_command(mbx_legacy.stats)
+    bot.tree.add_command(mbx_legacy.directory)
+    bot.tree.add_command(mbx_legacy.setup)
+    bot.tree.add_command(mbx_legacy.config_cmd)
+    bot.tree.add_command(mbx_legacy.publicexecution)
+    bot.tree.add_command(mbx_legacy.internals)
+    bot.tree.add_command(mbx_legacy.archive)
+    bot.tree.add_command(mbx_legacy.unarchive)
+    bot.tree.add_command(mbx_legacy.clone)
+    bot.tree.add_command(mbx_legacy.rules)
+    bot.tree.add_command(mbx_legacy.safety_panel)
+    bot.tree.add_command(mbx_legacy.access)
+    bot.tree.add_command(mbx_legacy.lockdown)
+    bot.tree.add_command(mbx_legacy.unlockdown)
+    bot.tree.add_command(mbx_legacy.status_cmd)
+    bot.add_listener(mbx_legacy.on_guild_role_update)
+    bot.add_listener(mbx_legacy.on_member_update)
+    bot.add_listener(mbx_legacy.on_message)
+    bot.add_listener(mbx_legacy.on_ready)
+    bot.tree.on_error = mbx_legacy.on_app_command_error
