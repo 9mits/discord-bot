@@ -1,80 +1,13 @@
 """AutoMod commands and gateway listeners."""
 from __future__ import annotations
 
-import base64
+import json
+import logging
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-import aiohttp
-import asyncio
-import copy
-import ipaddress
-from discord.ext import tasks
-import json
-import os
-import socket
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List, Union, Set, Tuple, Any
-from collections import Counter, deque, defaultdict
-import html
-import re
-import io
-import logging
-import tempfile
-from pathlib import Path
-from types import SimpleNamespace
-from urllib.parse import urlsplit
-from discord.http import Route
-from modules.mbx_constants import (
-    BRAND_NAME,
-    COOLDOWN_SECONDS,
-    DEFAULT_ARCHIVE_CAT_ID,
-    DEFAULT_MAX_UNREAD_PINGS,
-    DEFAULT_MESSAGE_CACHE_LIMIT,
-    DEFAULT_MESSAGE_CACHE_RETENTION_DAYS,
-    DEFAULT_RULES,
-    EMBED_PALETTE,
-    FEATURE_FLAG_LABELS,
-    HOLO_PRIMARY,
-    HOLO_SECONDARY,
-    HOLO_TERTIARY,
-    MODMAIL_PANEL_BANNER_URL,
-    MODMAIL_PANEL_CATEGORIES,
-    SCOPE_ANALYTICS,
-    SCOPE_MODERATION,
-    SCOPE_ROLES,
-    SCOPE_SUPPORT,
-    SCOPE_SYSTEM,
-    THEME_ORANGE,
-    TOKEN_ENV_VARS,
-)
-from modules.mbx_models import CaseNote
-from modules.mbx_services import (
-    DEFAULT_CANNED_REPLIES,
-    DEFAULT_ESCALATION_MATRIX,
-    DEFAULT_FEATURE_FLAGS,
-    DEFAULT_NATIVE_AUTOMOD_SETTINGS,
-    DEFAULT_SCHEMA_VERSION,
-    DEFAULT_TICKET_PRIORITIES,
-    export_case_payload,
-    export_config_payload,
-    get_feature_flag,
-    get_escalation_steps,
-    get_native_automod_settings,
-    has_capability,
-    import_config_payload,
-    normalize_case_record,
-    normalize_modmail_ticket,
-    resolve_escalation_duration,
-    resolve_native_automod_policy,
-    run_schema_migrations,
-    sanitize_evidence_links,
-    sanitize_linked_cases,
-    sanitize_tags,
-    ticket_needs_sla_alert,
-    validate_guild_configuration,
-)
+from modules.mbx_constants import SCOPE_MODERATION
 from modules.mbx_context import abuse_system, bot, tree
 from modules.mbx_embeds import (
     _build_footer_text,
@@ -119,11 +52,12 @@ from modules.mbx_permissions import (
     check_admin,
     check_owner,
     get_context_guild,
-    get_primary_guild,
+    has_capability,
     has_dangerous_perm,
     has_permission_capability,
     is_staff,
     is_staff_member,
+    require_capability,
     requires_setup,
     resolve_member,
     respond_with_error,
@@ -321,6 +255,7 @@ from modules.mbx_roles import (
     get_custom_role_limit,
     split_embed_entries,
 )
+from modules.mbx_services import get_feature_flag
 from modules.mbx_utils import (
     create_progress_bar,
     extract_snowflake_id,
@@ -481,8 +416,11 @@ logger = logging.getLogger("MGXBot")
 
 @tree.command(name="automod", description="Open the AutoMod control panel | admin")
 @app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@require_capability("automod.configure")
 async def automod_cmd(interaction: discord.Interaction):
+    if not has_capability(interaction, "automod.view"):
+        await respond_with_error(interaction, "Access denied.", scope=SCOPE_MODERATION)
+        return
     if not get_feature_flag(bot.data_manager.config, "automod_panel", True):
         await respond_with_error(interaction, "The AutoMod panel is currently turned off in feature settings.", scope=SCOPE_MODERATION)
         return

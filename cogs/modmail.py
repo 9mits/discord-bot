@@ -1,80 +1,13 @@
 """Message routing and modmail relay listener."""
 from __future__ import annotations
 
-import base64
+import logging
+import time
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-import aiohttp
-import asyncio
-import copy
-import ipaddress
-from discord.ext import tasks
-import json
-import os
-import socket
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List, Union, Set, Tuple, Any
-from collections import Counter, deque, defaultdict
-import html
-import re
-import io
-import logging
-import tempfile
-from pathlib import Path
-from types import SimpleNamespace
-from urllib.parse import urlsplit
-from discord.http import Route
-from modules.mbx_constants import (
-    BRAND_NAME,
-    COOLDOWN_SECONDS,
-    DEFAULT_ARCHIVE_CAT_ID,
-    DEFAULT_MAX_UNREAD_PINGS,
-    DEFAULT_MESSAGE_CACHE_LIMIT,
-    DEFAULT_MESSAGE_CACHE_RETENTION_DAYS,
-    DEFAULT_RULES,
-    EMBED_PALETTE,
-    FEATURE_FLAG_LABELS,
-    HOLO_PRIMARY,
-    HOLO_SECONDARY,
-    HOLO_TERTIARY,
-    MODMAIL_PANEL_BANNER_URL,
-    MODMAIL_PANEL_CATEGORIES,
-    SCOPE_ANALYTICS,
-    SCOPE_MODERATION,
-    SCOPE_ROLES,
-    SCOPE_SUPPORT,
-    SCOPE_SYSTEM,
-    THEME_ORANGE,
-    TOKEN_ENV_VARS,
-)
-from modules.mbx_models import CaseNote
-from modules.mbx_services import (
-    DEFAULT_CANNED_REPLIES,
-    DEFAULT_ESCALATION_MATRIX,
-    DEFAULT_FEATURE_FLAGS,
-    DEFAULT_NATIVE_AUTOMOD_SETTINGS,
-    DEFAULT_SCHEMA_VERSION,
-    DEFAULT_TICKET_PRIORITIES,
-    export_case_payload,
-    export_config_payload,
-    get_feature_flag,
-    get_escalation_steps,
-    get_native_automod_settings,
-    has_capability,
-    import_config_payload,
-    normalize_case_record,
-    normalize_modmail_ticket,
-    resolve_escalation_duration,
-    resolve_native_automod_policy,
-    run_schema_migrations,
-    sanitize_evidence_links,
-    sanitize_linked_cases,
-    sanitize_tags,
-    ticket_needs_sla_alert,
-    validate_guild_configuration,
-)
+from modules.mbx_constants import SCOPE_SUPPORT, SCOPE_SYSTEM
 from modules.mbx_context import abuse_system, bot, tree
 from modules.mbx_embeds import (
     _build_footer_text,
@@ -119,7 +52,6 @@ from modules.mbx_permissions import (
     check_admin,
     check_owner,
     get_context_guild,
-    get_primary_guild,
     has_dangerous_perm,
     has_permission_capability,
     is_staff,
@@ -128,6 +60,7 @@ from modules.mbx_permissions import (
     resolve_member,
     respond_with_error,
 )
+from modules.mbx_permission_engine import can_member_use
 from modules.mbx_images import (
     MODMAIL_RELAY_MAX_FILE_BYTES,
     MODMAIL_RELAY_MAX_FILES,
@@ -505,12 +438,12 @@ async def on_message(message: discord.Message):
 
     if (has_everyone or has_role) and not is_immune:
         # Only apply to staff (Admins/Mods) as requested
-        mod_roles_ids = bot.data_manager.config.get("mod_roles", [])
-        is_staff_member = False
-        if any(r.id in mod_roles_ids for r in message.author.roles):
-            is_staff_member = True
-        elif message.author.guild_permissions.administrator:
-            is_staff_member = True
+        is_staff_member = can_member_use(
+            message.author,
+            "automod.respond",
+            bot.data_manager.config,
+            guild_owner_id=message.guild.owner_id,
+        )
 
         if is_staff_member:
             now = time.time()
@@ -606,6 +539,14 @@ async def on_message(message: discord.Message):
         target_uid = bot.data_manager.get_modmail_user_id(message.channel.id)
 
         if target_uid:
+            if not can_member_use(
+                message.author,
+                "modmail.reply",
+                bot.data_manager.config,
+                guild_owner_id=message.guild.owner_id,
+            ):
+                await message.channel.send("Access denied: you need modmail reply access to respond here.")
+                return
             # It is a modmail thread
             ticket = bot.data_manager.modmail.get(target_uid)
             if ticket and ticket.get("status") == "open":

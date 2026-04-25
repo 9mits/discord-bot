@@ -2,78 +2,35 @@
 from __future__ import annotations
 
 import asyncio
-import copy
-import html
-import io
-import json
 import logging
-import re
-import time
-from collections import Counter, defaultdict, deque
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, Optional
 
 import discord
-from discord import app_commands
-from discord.ext import commands, tasks
 from discord.http import Route
 
-from modules.mbx_automod import *
-from modules.mbx_cases import *
-from modules.mbx_constants import *
-from modules.mbx_context import abuse_system, bot, tree
-from modules.mbx_embeds import *
+from modules.mbx_constants import SCOPE_SYSTEM
+from modules.mbx_context import bot
 from modules.mbx_embeds import (
     _build_footer_text,
-    _build_footer_text_with_detail,
     _format_branding_panel_value,
     _get_branding_config,
     _get_footer_icon_url,
-    _set_footer_branding,
+    make_embed,
+    make_error_embed,
 )
-from modules.mbx_formatters import *
-from modules.mbx_images import *
-from modules.mbx_images import (
-    _format_image_size_limit,
-    _is_public_image_ip,
-    _make_image_data_uri,
-    _resolve_image_host_addresses,
-)
-from modules.mbx_logging import *
-from modules.mbx_logging import _send_log_to_channels
-from modules.mbx_models import *
-from modules.mbx_permissions import *
-from modules.mbx_punish import build_punish_embed, execute_punishment, get_valid_duration
-from modules.mbx_roles import *
-from modules.mbx_services import *
-from modules.mbx_utils import *
+from modules.mbx_images import fetch_image_data_uri
+from modules.mbx_utils import truncate_text
 
 logger = logging.getLogger("MGXBot")
 
 
-def _legacy_value(name: str):
-    from modules import mbx_legacy
-
-    return getattr(mbx_legacy, name)
+def BrandingPanelView(*args, **kwargs):
+    from ui.config import BrandingPanelView as _cls
+    return _cls(*args, **kwargs)
 
 
 def _active_bot():
-    try:
-        return _legacy_value("bot")
-    except Exception:
-        return bot
-
-
-def BrandingPanelView(*args, **kwargs):
-    from ui.config import BrandingPanelView as view_cls
-
-    return view_cls(*args, **kwargs)
-
-
-def fetch_image_data_uri(*args, **kwargs):
-    return _legacy_value("fetch_image_data_uri")(*args, **kwargs)
+    return bot
 
 
 MAX_GUILD_MEMBER_BIO_LENGTH = 190

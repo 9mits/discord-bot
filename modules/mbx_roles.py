@@ -1,10 +1,4 @@
-"""Custom role feature helpers.
-
-Extracted from mbx_legacy. Owns: eligibility logic, embed builders for the
-role landing/info/settings panels, and the registry helpers.
-Views, Modals, and slash commands remain in mbx_legacy until the tree
-registration is refactored.
-"""
+"""Custom role feature helpers."""
 from __future__ import annotations
 
 from typing import List, Optional, Tuple

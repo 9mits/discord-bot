@@ -157,8 +157,8 @@ class DataManager:
 
     # ------------------------------------------------------------------ #
     #  Backward-compatible property shims                                  #
-    #  All existing code in mbx_legacy.py accesses these names directly.  #
-    #  They transparently route to the current guild's shard.             #
+    #  Legacy callers access these names directly; they route to the       #
+    #  current guild's shard.                                              #
     # ------------------------------------------------------------------ #
 
     @property
@@ -615,12 +615,7 @@ class DataManager:
         self._modmail_threads_map.clear()
         self._dirty.clear()
 
-        guild_ids = await self.get_all_active_guild_ids()
-        if not guild_ids:
-            await self.provision_guild(DEFAULT_GUILD_ID)
-            guild_ids = [DEFAULT_GUILD_ID]
-
-        for guild_id in guild_ids:
+        for guild_id in await self.get_all_active_guild_ids():
             await self.load_guild(guild_id)
 
     async def load_guild(self, guild_id: int) -> None:
@@ -1082,7 +1077,11 @@ class DataManager:
         logger.info("Migrating existing JSON data to SQLite (one-time migration)…")
 
         raw_config = read_json_file(CONFIG_FILE, {})
-        guild_id = int(raw_config.get("guild_id", DEFAULT_GUILD_ID))
+        raw_guild_id = raw_config.get("guild_id")
+        if not raw_guild_id:
+            logger.info("Skipping legacy JSON migration: config.json has no guild_id.")
+            return
+        guild_id = int(raw_guild_id)
 
         prev = self._current_guild_id
         self._current_guild_id = guild_id

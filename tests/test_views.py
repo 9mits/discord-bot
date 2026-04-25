@@ -1,10 +1,32 @@
+"""Tests for UI views and core module functions."""
+from __future__ import annotations
+
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import discord
 
-from modules import mbx_legacy
+import modules.mbx_automod
+import modules.mbx_branding
+import modules.mbx_embeds
+import modules.mbx_images
+import modules.mbx_modmail
+import ui.moderation
+import ui.config
+from modules.mbx_images import (
+    fetch_image_bytes,
+    prepare_modmail_relay_attachments,
+    validate_image_fetch_url,
+)
+from modules.mbx_embeds import (
+    _build_footer_text,
+    _format_branding_panel_value,
+)
+from modules.mbx_logging import normalize_log_embed
+from modules.mbx_constants import SCOPE_MODERATION, SCOPE_SYSTEM, BRAND_NAME
+from modules.mbx_branding import _build_branding_panel_embed, apply_guild_member_branding
+from modules.mbx_modmail import send_modmail_thread_intro
 
 
 def make_interaction():
@@ -68,54 +90,58 @@ class FakeAttachment:
         return self.filename
 
 
-class MbxLegacyAuthTests(unittest.IsolatedAsyncioTestCase):
+# ---------------------------------------------------------------------------
+# Auth guard tests — UI views must reject non-staff interactions
+# ---------------------------------------------------------------------------
+
+class ViewAuthTests(unittest.IsolatedAsyncioTestCase):
     async def test_revoke_appeal_entrypoint_rejects_non_staff(self):
         interaction = make_interaction()
-        view = mbx_legacy.RevokeAppealView(target_id=1, moderator_id=2, duration=0, timestamp="2026-01-01T00:00:00+00:00")
-
-        with patch.object(mbx_legacy, "is_staff", return_value=False):
+        view = ui.moderation.RevokeAppealView(
+            target_id=1, moderator_id=2, duration=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+        )
+        with patch.object(ui.moderation, "is_staff", return_value=False):
             await view.children[0].callback(interaction)
-
         interaction.response.send_message.assert_awaited_once_with("Access denied.", ephemeral=True)
 
     async def test_confirm_revoke_view_rejects_non_staff(self):
         interaction = make_interaction()
         parent_view = SimpleNamespace(finish_revoke=AsyncMock())
-        view = mbx_legacy.ConfirmRevokeView(parent_view, SimpleNamespace())
-
-        with patch.object(mbx_legacy, "is_staff", return_value=False):
+        view = ui.moderation.ConfirmRevokeView(parent_view, SimpleNamespace())
+        with patch.object(ui.moderation, "is_staff", return_value=False):
             await view.children[0].callback(interaction)
-
         interaction.response.send_message.assert_awaited_once_with("Access denied.", ephemeral=True)
         parent_view.finish_revoke.assert_not_awaited()
 
     async def test_deny_appeal_modal_rejects_non_staff(self):
         interaction = make_interaction()
-        modal = mbx_legacy.DenyAppealModal(
+        modal = ui.moderation.DenyAppealModal(
             target_id=1,
             origin_message=SimpleNamespace(embeds=[SimpleNamespace()]),
             view=SimpleNamespace(children=[]),
         )
-
-        with patch.object(mbx_legacy, "is_staff", return_value=False):
+        with patch.object(ui.moderation, "is_staff", return_value=False):
             await modal.on_submit(interaction)
-
         interaction.response.send_message.assert_awaited_once_with("Access denied.", ephemeral=True)
 
     async def test_finish_revoke_rejects_non_staff(self):
         interaction = make_interaction()
-        view = mbx_legacy.RevokeAppealView(target_id=1, moderator_id=2, duration=0, timestamp="2026-01-01T00:00:00+00:00")
-
-        with patch.object(mbx_legacy, "is_staff", return_value=False):
+        view = ui.moderation.RevokeAppealView(
+            target_id=1, moderator_id=2, duration=0,
+            timestamp="2026-01-01T00:00:00+00:00",
+        )
+        with patch.object(ui.moderation, "is_staff", return_value=False):
             await view.finish_revoke(interaction, SimpleNamespace(embeds=[SimpleNamespace()]))
-
         interaction.response.send_message.assert_awaited_once_with("Access denied.", ephemeral=True)
 
     async def test_apply_automod_report_response_rejects_non_staff(self):
         interaction = make_interaction()
-
-        with patch.object(mbx_legacy, "is_staff", return_value=False), patch.object(mbx_legacy, "respond_with_error", AsyncMock()) as mock_error:
-            success = await mbx_legacy.apply_automod_report_response(
+        with (
+            patch.object(modules.mbx_automod, "is_staff", return_value=False),
+            patch.object(modules.mbx_automod, "respond_with_error", AsyncMock()) as mock_error,
+        ):
+            success = await modules.mbx_automod.apply_automod_report_response(
                 interaction,
                 guild_id=1,
                 reporter_id=2,
@@ -125,42 +151,56 @@ class MbxLegacyAuthTests(unittest.IsolatedAsyncioTestCase):
                 response_text="Thanks",
                 source_message=None,
             )
-
         self.assertFalse(success)
-        mock_error.assert_awaited_once_with(interaction, "Access denied.", scope=mbx_legacy.SCOPE_MODERATION)
+        mock_error.assert_awaited_once_with(
+            interaction, "Access denied.", scope=SCOPE_MODERATION
+        )
 
 
-class MbxLegacyFetchTests(unittest.IsolatedAsyncioTestCase):
+# ---------------------------------------------------------------------------
+# Image fetch / validation tests
+# ---------------------------------------------------------------------------
+
+class ImageFetchTests(unittest.IsolatedAsyncioTestCase):
     async def test_validate_image_fetch_url_rejects_non_https(self):
-        _, error = await mbx_legacy.validate_image_fetch_url("http://example.com/image.png")
+        _, error = await validate_image_fetch_url("http://example.com/image.png")
         self.assertEqual(error, "Image URLs must use HTTPS.")
 
     async def test_validate_image_fetch_url_rejects_credentials(self):
-        _, error = await mbx_legacy.validate_image_fetch_url("https://user:pass@example.com/image.png")
+        _, error = await validate_image_fetch_url("https://user:pass@example.com/image.png")
         self.assertEqual(error, "Image URLs with embedded credentials are not allowed.")
 
     async def test_validate_image_fetch_url_rejects_private_host(self):
-        with patch.object(mbx_legacy, "_resolve_image_host_addresses", AsyncMock(return_value=(["127.0.0.1"], None))):
-            _, error = await mbx_legacy.validate_image_fetch_url("https://localhost/image.png")
-
+        with patch.object(
+            modules.mbx_images, "_resolve_image_host_addresses",
+            AsyncMock(return_value=(["127.0.0.1"], None)),
+        ):
+            _, error = await validate_image_fetch_url("https://localhost/image.png")
         self.assertEqual(error, "Image URLs must use a public host.")
 
     async def test_fetch_image_bytes_rejects_redirects(self):
         session = FakeSession(FakeResponse(302))
-
-        with patch.object(mbx_legacy, "validate_image_fetch_url", AsyncMock(return_value=("https://cdn.example/image.png", None))), patch.object(
-            mbx_legacy,
-            "bot",
-            SimpleNamespace(session=session),
+        with (
+            patch.object(
+                modules.mbx_images, "validate_image_fetch_url",
+                AsyncMock(return_value=("https://cdn.example/image.png", None)),
+            ),
+            patch.object(
+                modules.mbx_images, "_active_bot",
+                return_value=SimpleNamespace(session=session),
+            ),
         ):
-            payload, error = await mbx_legacy.fetch_image_bytes("https://cdn.example/image.png")
-
+            payload, error = await fetch_image_bytes("https://cdn.example/image.png")
         self.assertIsNone(payload)
         self.assertEqual(error, "Image URLs cannot redirect.")
         self.assertFalse(session.last_kwargs["allow_redirects"])
 
 
-class MbxLegacyModmailTests(unittest.IsolatedAsyncioTestCase):
+# ---------------------------------------------------------------------------
+# Modmail attachment / threading tests
+# ---------------------------------------------------------------------------
+
+class ModmailTests(unittest.IsolatedAsyncioTestCase):
     async def test_prepare_modmail_relay_attachments_skips_oversized_and_extra_files(self):
         mib = 1024 * 1024
         attachments = [
@@ -172,9 +212,7 @@ class MbxLegacyModmailTests(unittest.IsolatedAsyncioTestCase):
             FakeAttachment("keep-5.png", mib),
             FakeAttachment("extra.png", mib),
         ]
-
-        files, notice = await mbx_legacy.prepare_modmail_relay_attachments(attachments)
-
+        files, notice = await prepare_modmail_relay_attachments(attachments)
         self.assertEqual(files, ["keep-1.png", "keep-2.png", "keep-3.png", "keep-4.png", "keep-5.png"])
         self.assertIn("first 5", notice)
         self.assertIn("over 8 MiB", notice)
@@ -188,9 +226,7 @@ class MbxLegacyModmailTests(unittest.IsolatedAsyncioTestCase):
             FakeAttachment("keep-2.png", 8 * mib),
             FakeAttachment("skip-total.png", 5 * mib),
         ]
-
-        files, notice = await mbx_legacy.prepare_modmail_relay_attachments(attachments)
-
+        files, notice = await prepare_modmail_relay_attachments(attachments)
         self.assertEqual(files, ["keep-1.png", "keep-2.png"])
         self.assertIn("20 MiB total", notice)
         self.assertEqual(attachments[-1].calls, 0)
@@ -198,9 +234,7 @@ class MbxLegacyModmailTests(unittest.IsolatedAsyncioTestCase):
     async def test_send_modmail_thread_intro_disables_mentions(self):
         thread = SimpleNamespace(send=AsyncMock())
         user = SimpleNamespace(mention="<@123>")
-
-        await mbx_legacy.send_modmail_thread_intro(thread, user, "Report", ["**Subject**: @everyone"])
-
+        await send_modmail_thread_intro(thread, user, "Report", ["**Subject**: @everyone"])
         allowed_mentions = thread.send.await_args.kwargs["allowed_mentions"]
         self.assertIsInstance(allowed_mentions, discord.AllowedMentions)
         self.assertFalse(allowed_mentions.everyone)
@@ -208,30 +242,32 @@ class MbxLegacyModmailTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(allowed_mentions.users)
 
 
-class MbxLegacyBrandingTests(unittest.IsolatedAsyncioTestCase):
+# ---------------------------------------------------------------------------
+# Embed / branding helper tests
+# ---------------------------------------------------------------------------
+
+class EmbedBrandingTests(unittest.IsolatedAsyncioTestCase):
     def test_format_branding_panel_value_uses_inline_code_for_empty_values(self):
-        self.assertEqual(mbx_legacy._format_branding_panel_value(None), "`Not set`")
-        self.assertEqual(mbx_legacy._format_branding_panel_value(""), "`Not set`")
+        self.assertEqual(_format_branding_panel_value(None), "`Not set`")
+        self.assertEqual(_format_branding_panel_value(""), "`Not set`")
 
     def test_build_footer_text_uses_guild_name_first(self):
         guild = SimpleNamespace(name="Cool Server")
-
-        footer_text = mbx_legacy._build_footer_text(mbx_legacy.SCOPE_SYSTEM, guild)
-
+        footer_text = _build_footer_text(SCOPE_SYSTEM, guild)
         self.assertEqual(footer_text, "Cool Server • Control Center")
 
     def test_build_footer_text_falls_back_to_brand_name_without_guild(self):
-        footer_text = mbx_legacy._build_footer_text(mbx_legacy.SCOPE_SYSTEM, None)
-
-        self.assertEqual(footer_text, f"{mbx_legacy.BRAND_NAME} • {mbx_legacy.SCOPE_SYSTEM}")
+        footer_text = _build_footer_text(SCOPE_SYSTEM, None)
+        self.assertEqual(footer_text, f"{BRAND_NAME} • {SCOPE_SYSTEM}")
 
     def test_normalize_log_embed_rebrands_footer_with_guild_icon(self):
         embed = discord.Embed(title="Test", description="Body")
         embed.set_footer(text="Wrong Footer", icon_url="https://cdn.example/old.png")
-        guild = SimpleNamespace(name="Cool Server", icon=SimpleNamespace(url="https://cdn.example/server.png"))
-
-        normalized = mbx_legacy.normalize_log_embed(embed, guild=guild)
-
+        guild = SimpleNamespace(
+            name="Cool Server",
+            icon=SimpleNamespace(url="https://cdn.example/server.png"),
+        )
+        normalized = normalize_log_embed(embed, guild=guild)
         self.assertEqual(normalized.footer.text, "Wrong Footer")
         self.assertEqual(str(normalized.footer.icon_url), "https://cdn.example/server.png")
 
@@ -249,10 +285,11 @@ class MbxLegacyBrandingTests(unittest.IsolatedAsyncioTestCase):
             get_member=lambda _user_id: None,
         )
         fake_bot = SimpleNamespace(user=SimpleNamespace(name="Cool Bot"))
-
-        with patch.object(mbx_legacy, "bot", fake_bot), patch.object(mbx_legacy, "_get_branding_config", return_value={}):
-            embed = mbx_legacy._build_branding_panel_embed(guild)
-
+        with (
+            patch.object(modules.mbx_branding, "_active_bot", return_value=fake_bot),
+            patch.object(modules.mbx_embeds, "_get_branding_config", return_value={}),
+        ):
+            embed = _build_branding_panel_embed(guild)
         fields = {field.name: field.value for field in embed.fields}
         self.assertEqual(fields["Profile Bio"], "`Not set`")
         self.assertEqual(fields["Profile Avatar"], "`Not set`")
@@ -262,13 +299,12 @@ class MbxLegacyBrandingTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_branding_modal_labels_fit_discord_limit(self):
         modals = [
-            mbx_legacy.BrandingDisplayNameModal(),
-            mbx_legacy.BrandingAvatarModal(),
-            mbx_legacy.BrandingBannerModal(),
-            mbx_legacy.BrandingBioModal(),
-            mbx_legacy.BrandingModmailBannerModal(),
+            ui.config.BrandingDisplayNameModal(),
+            ui.config.BrandingAvatarModal(),
+            ui.config.BrandingBannerModal(),
+            ui.config.BrandingBioModal(),
+            ui.config.BrandingModmailBannerModal(),
         ]
-
         for modal in modals:
             for child in modal.children:
                 label = child.to_component_dict()["label"]
@@ -278,13 +314,17 @@ class MbxLegacyBrandingTests(unittest.IsolatedAsyncioTestCase):
         request = AsyncMock()
         guild = SimpleNamespace(id=123)
         fake_bot = SimpleNamespace(http=SimpleNamespace(request=request))
-
-        with patch.object(
-            mbx_legacy,
-            "fetch_image_data_uri",
-            AsyncMock(side_effect=[("data:image/png;base64,AAA", None), ("data:image/png;base64,BBB", None)]),
-        ), patch.object(mbx_legacy, "bot", fake_bot):
-            error = await mbx_legacy.apply_guild_member_branding(
+        with (
+            patch.object(
+                modules.mbx_branding, "fetch_image_data_uri",
+                AsyncMock(side_effect=[
+                    ("data:image/png;base64,AAA", None),
+                    ("data:image/png;base64,BBB", None),
+                ]),
+            ),
+            patch.object(modules.mbx_branding, "_active_bot", return_value=fake_bot),
+        ):
+            error = await apply_guild_member_branding(
                 guild,
                 display_name="Server Bot",
                 avatar_url="https://cdn.example/avatar.png",
@@ -292,7 +332,6 @@ class MbxLegacyBrandingTests(unittest.IsolatedAsyncioTestCase):
                 bio="Guild bio",
                 reason="test update",
             )
-
         self.assertIsNone(error)
         request.assert_awaited_once()
         payload = request.await_args.kwargs["json"]

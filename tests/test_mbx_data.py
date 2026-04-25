@@ -41,7 +41,7 @@ class MbxDataTests(unittest.TestCase):
         self.assertEqual(normalized["channel_id"], 9)
         self.assertIsInstance(normalized["created_at"], type(discord.utils.utcnow()))
 
-    def test_load_all_initializes_defaults_and_migrations(self):
+    def test_load_all_skips_fake_guild_on_empty_install(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             base = Path(temp_dir)
             db_dir = base / "database"
@@ -59,6 +59,7 @@ class MbxDataTests(unittest.TestCase):
                 (db_dir / name).write_text(payload, encoding="utf-8")
 
             with patch.object(mbx_data, "CONFIG_FILE", db_dir / "config.json"), \
+                patch.object(mbx_data, "SAORI_DB", db_dir / "saori.db"), \
                 patch.object(mbx_data, "ROLES_FILE", db_dir / "roles.json"), \
                 patch.object(mbx_data, "PUNISHMENTS_FILE", db_dir / "punishments.json"), \
                 patch.object(mbx_data, "MOD_STATS_FILE", db_dir / "mod_stats.json"), \
@@ -68,8 +69,8 @@ class MbxDataTests(unittest.TestCase):
                 patch.object(mbx_data, "LOCKDOWN_FILE", db_dir / "lockdown.json"):
                 asyncio.run(self.manager.load_all())
 
-        self.assertIn("feature_flags", self.manager.config)
-        self.assertIsInstance(self.manager.message_cache, deque)
+        self.assertEqual(self.manager._configs, {})
+        self.assertEqual(self.manager._message_caches, {})
 
     def test_resolve_bot_token_prefers_environment_variable(self):
         with tempfile.TemporaryDirectory() as temp_dir:

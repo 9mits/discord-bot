@@ -1,4 +1,4 @@
-"""Punishment execution helpers extracted from mbx_legacy."""
+"""Punishment execution helpers."""
 from __future__ import annotations
 
 from datetime import timedelta

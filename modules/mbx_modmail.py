@@ -2,68 +2,37 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import html
 import io
 import json
 import logging
 import re
 import time
-from collections import Counter, defaultdict, deque
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
+from datetime import timezone
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import discord
-from discord import app_commands
-from discord.ext import commands, tasks
-from discord.http import Route
+from discord.ext import commands
 
-from modules.mbx_automod import *
-from modules.mbx_cases import *
-from modules.mbx_constants import *
-from modules.mbx_context import abuse_system, bot, tree
-from modules.mbx_embeds import *
-from modules.mbx_embeds import (
-    _build_footer_text,
-    _build_footer_text_with_detail,
-    _format_branding_panel_value,
-    _get_branding_config,
-    _get_footer_icon_url,
-    _set_footer_branding,
+from modules.mbx_constants import (
+    EMBED_PALETTE,
+    MODMAIL_PANEL_BANNER_URL,
+    MODMAIL_PANEL_CATEGORIES,
+    SCOPE_SUPPORT,
 )
-from modules.mbx_formatters import *
-from modules.mbx_images import *
-from modules.mbx_images import (
-    _format_image_size_limit,
-    _is_public_image_ip,
-    _make_image_data_uri,
-    _resolve_image_host_addresses,
-)
-from modules.mbx_logging import *
-from modules.mbx_logging import _send_log_to_channels
-from modules.mbx_models import *
-from modules.mbx_permissions import *
-from modules.mbx_punish import build_punish_embed, execute_punishment, get_valid_duration
-from modules.mbx_roles import *
-from modules.mbx_services import *
-from modules.mbx_utils import *
+from modules.mbx_context import bot
+from modules.mbx_embeds import _get_branding_config, brand_embed, make_embed, upsert_embed_field
+from modules.mbx_formatters import is_record_active, join_lines
+from modules.mbx_images import PROFILE_BRANDING_MAX_BYTES, fetch_image_bytes
+from modules.mbx_services import get_feature_flag
+from modules.mbx_utils import iso_to_dt
 
 logger = logging.getLogger("MGXBot")
 
 
-def _legacy_value(name: str):
-    from modules import mbx_legacy
-
-    return getattr(mbx_legacy, name)
-
-
 def _active_bot():
-    try:
-        return _legacy_value("bot")
-    except Exception:
-        return bot
+    return bot
 
 
 def _data_manager():
@@ -178,8 +147,6 @@ def generate_transcript_html(messages, user):
     return "\n".join(html_parts)
 
 
-def fetch_image_bytes(*args, **kwargs):
-    return _legacy_value("fetch_image_bytes")(*args, **kwargs)
 
 
 async def send_modmail_thread_intro(thread: discord.Thread, user, category: str, fields_data: List[str]) -> None:
@@ -264,8 +231,9 @@ async def send_modmail_panel_message(
     return await destination.send(embed=embed, view=ModmailPanelView())
 
 async def maybe_send_dm_modmail_panel(user: discord.User, *, guild: Optional[discord.Guild] = None, force: bool = False, intro: Optional[str] = None) -> bool:
-    guild = guild or get_primary_guild()
     if guild is None:
+        # In a multi-server bot there is no "primary" guild — callers must
+        # pass the originating guild explicitly. Bail out silently if missing.
         return False
 
     if not get_feature_flag(bot.data_manager._configs.get(guild.id, {}), "dm_modmail_prompt", True):

@@ -1,208 +1,54 @@
 from __future__ import annotations
 
-import asyncio
-import copy
-import html
 import io
 import json
 import logging
-import re
-import time
-from collections import Counter, defaultdict, deque
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
-from discord.http import Route
+from discord.ext import commands
 
-from modules.mbx_automod import *
-from modules.mbx_cases import *
-from modules.mbx_constants import *
+from modules.mbx_automod import respond_with_error
+from modules.mbx_branding import (
+    MAX_GUILD_MEMBER_BIO_LENGTH,
+    _build_branding_panel_embed,
+    _refresh_branding_panel,
+    apply_guild_member_branding,
+    build_branding_error_embed,
+    save_branding_settings,
+)
+from modules.mbx_constants import DEFAULT_RULES, SCOPE_MODERATION, SCOPE_SUPPORT, SCOPE_SYSTEM
 from modules.mbx_context import abuse_system, bot, tree
-from modules.mbx_embeds import *
-from modules.mbx_embeds import (
-    _build_footer_text,
-    _build_footer_text_with_detail,
-    _format_branding_panel_value,
-    _get_branding_config,
-    _get_footer_icon_url,
-    _set_footer_branding,
+from modules.mbx_embeds import brand_embed, make_confirmation_embed, make_embed, make_error_embed
+from modules.mbx_formatters import describe_punishment_record, format_user_ref, get_case_label
+from modules.mbx_logging import format_log_quote, format_reason_value, send_log
+from modules.mbx_permissions import can_use_panel, respond_with_error
+from modules.mbx_services import (
+    DEFAULT_ESCALATION_MATRIX,
+    export_config_payload,
+    get_feature_flag,
+    import_config_payload,
+    validate_guild_configuration,
 )
-from modules.mbx_formatters import *
-from modules.mbx_images import *
-from modules.mbx_images import (
-    _format_image_size_limit,
-    _is_public_image_ip,
-    _make_image_data_uri,
-    _resolve_image_host_addresses,
+from modules.mbx_setup import (
+    build_canned_replies_embed,
+    build_config_dashboard_embed,
+    build_escalation_matrix_embed,
+    build_feature_flags_embed,
+    build_modmail_settings_embed,
+    build_rules_dashboard_embed,
+    build_setup_dashboard_embed,
+    build_setup_validation_embed,
+    get_feature_flag_name,
 )
-from modules.mbx_logging import *
-from modules.mbx_logging import _send_log_to_channels
-from modules.mbx_models import *
-from modules.mbx_permissions import *
-from modules.mbx_punish import build_punish_embed, execute_punishment
-from modules.mbx_roles import *
-from modules.mbx_services import *
-from modules.mbx_utils import *
+from modules.mbx_modmail import send_modmail_panel_message
+from modules.mbx_staff import build_test_env_embed
+from modules.mbx_utils import format_duration, parse_duration_str, truncate_text
 from ui.shared import ExpirableMixin
-MAX_GUILD_MEMBER_BIO_LENGTH = 190
 
 
 logger = logging.getLogger("MGXBot")
-
-
-def _legacy_value(name: str):
-    from modules import mbx_legacy
-
-    return getattr(mbx_legacy, name)
-
-def get_valid_duration(*args, **kwargs):
-    return _legacy_value("get_valid_duration")(*args, **kwargs)
-
-def build_mod_help_embed(*args, **kwargs):
-    return _legacy_value("build_mod_help_embed")(*args, **kwargs)
-
-def build_modmail_panel_embed(*args, **kwargs):
-    return _legacy_value("build_modmail_panel_embed")(*args, **kwargs)
-
-def build_modmail_settings_embed(*args, **kwargs):
-    return _legacy_value("build_modmail_settings_embed")(*args, **kwargs)
-
-def build_config_dashboard_embed(*args, **kwargs):
-    return _legacy_value("build_config_dashboard_embed")(*args, **kwargs)
-
-def build_rules_dashboard_embed(*args, **kwargs):
-    return _legacy_value("build_rules_dashboard_embed")(*args, **kwargs)
-
-def build_setup_dashboard_embed(*args, **kwargs):
-    return _legacy_value("build_setup_dashboard_embed")(*args, **kwargs)
-
-def build_feature_flags_embed(*args, **kwargs):
-    return _legacy_value("build_feature_flags_embed")(*args, **kwargs)
-
-def build_escalation_matrix_embed(*args, **kwargs):
-    return _legacy_value("build_escalation_matrix_embed")(*args, **kwargs)
-
-def build_canned_replies_embed(*args, **kwargs):
-    return _legacy_value("build_canned_replies_embed")(*args, **kwargs)
-
-def build_setup_validation_embed(*args, **kwargs):
-    return _legacy_value("build_setup_validation_embed")(*args, **kwargs)
-
-def build_status_embed(*args, **kwargs):
-    return _legacy_value("build_status_embed")(*args, **kwargs)
-
-def get_feature_flag_name(*args, **kwargs):
-    return _legacy_value("get_feature_flag_name")(*args, **kwargs)
-
-def send_modmail_thread_intro(*args, **kwargs):
-    return _legacy_value("send_modmail_thread_intro")(*args, **kwargs)
-
-def send_modmail_panel_message(*args, **kwargs):
-    return _legacy_value("send_modmail_panel_message")(*args, **kwargs)
-
-def maybe_send_dm_modmail_panel(*args, **kwargs):
-    return _legacy_value("maybe_send_dm_modmail_panel")(*args, **kwargs)
-
-def log_modmail_action(*args, **kwargs):
-    return _legacy_value("log_modmail_action")(*args, **kwargs)
-
-def apply_modmail_ticket_state(*args, **kwargs):
-    return _legacy_value("apply_modmail_ticket_state")(*args, **kwargs)
-
-def refresh_modmail_message(*args, **kwargs):
-    return _legacy_value("refresh_modmail_message")(*args, **kwargs)
-
-def refresh_modmail_ticket_log(*args, **kwargs):
-    return _legacy_value("refresh_modmail_ticket_log")(*args, **kwargs)
-
-def export_modmail_transcript(*args, **kwargs):
-    return _legacy_value("export_modmail_transcript")(*args, **kwargs)
-
-def resolve_modmail_user(*args, **kwargs):
-    return _legacy_value("resolve_modmail_user")(*args, **kwargs)
-
-def resolve_modmail_thread(*args, **kwargs):
-    return _legacy_value("resolve_modmail_thread")(*args, **kwargs)
-
-def _parse_user_id(*args, **kwargs):
-    return _legacy_value("_parse_user_id")(*args, **kwargs)
-
-def get_mod_cases(*args, **kwargs):
-    return _legacy_value("get_mod_cases")(*args, **kwargs)
-
-def get_staff_stats_embed(*args, **kwargs):
-    return _legacy_value("get_staff_stats_embed")(*args, **kwargs)
-
-def build_test_env_embed(*args, **kwargs):
-    return _legacy_value("build_test_env_embed")(*args, **kwargs)
-
-def log_case_management_action(*args, **kwargs):
-    return _legacy_value("log_case_management_action")(*args, **kwargs)
-
-def _split_case_input(*args, **kwargs):
-    return _legacy_value("_split_case_input")(*args, **kwargs)
-
-def get_public_execution_action_label(*args, **kwargs):
-    return _legacy_value("get_public_execution_action_label")(*args, **kwargs)
-
-def build_public_execution_embed(*args, **kwargs):
-    return _legacy_value("build_public_execution_embed")(*args, **kwargs)
-
-def execute_public_execution_vote(*args, **kwargs):
-    return _legacy_value("execute_public_execution_vote")(*args, **kwargs)
-
-def _refresh_branding_panel(*args, **kwargs):
-    return _legacy_value("_refresh_branding_panel")(*args, **kwargs)
-
-def apply_guild_member_branding(*args, **kwargs):
-    return _legacy_value("apply_guild_member_branding")(*args, **kwargs)
-
-def save_branding_settings(*args, **kwargs):
-    return _legacy_value("save_branding_settings")(*args, **kwargs)
-
-def build_branding_error_embed(*args, **kwargs):
-    return _legacy_value("build_branding_error_embed")(*args, **kwargs)
-
-def _build_branding_panel_embed(*args, **kwargs):
-    return _legacy_value("_build_branding_panel_embed")(*args, **kwargs)
-
-def show_punish_menu(*args, **kwargs):
-    return _legacy_value("show_punish_menu")(*args, **kwargs)
-
-def show_history_menu(*args, **kwargs):
-    return _legacy_value("show_history_menu")(*args, **kwargs)
-
-def show_case_panel(*args, **kwargs):
-    return _legacy_value("show_case_panel")(*args, **kwargs)
-
-def list_commands(*args, **kwargs):
-    return _legacy_value("list_commands")(*args, **kwargs)
-
-def _categorise_commands(*args, **kwargs):
-    return _legacy_value("_categorise_commands")(*args, **kwargs)
-
-def generate_transcript_html(*args, **kwargs):
-    return _legacy_value("generate_transcript_html")(*args, **kwargs)
-
-def is_staff(*args, **kwargs):
-    return _legacy_value("is_staff")(*args, **kwargs)
-
-def respond_with_error(*args, **kwargs):
-    return _legacy_value("respond_with_error")(*args, **kwargs)
-
-def resolve_member(*args, **kwargs):
-    return _legacy_value("resolve_member")(*args, **kwargs)
-
-def fetch_image_bytes(*args, **kwargs):
-    return _legacy_value("fetch_image_bytes")(*args, **kwargs)
-
-def fetch_image_data_uri(*args, **kwargs):
-    return _legacy_value("fetch_image_data_uri")(*args, **kwargs)
 
 class RuleEditModal(discord.ui.Modal, title="Add/Edit Punishment Rule"):
     rule_name = discord.ui.TextInput(label="Rule Name", placeholder="e.g. Spamming", max_length=50)
@@ -677,12 +523,21 @@ class ConfigDashboardActionSelect(discord.ui.Select):
             await interaction.response.send_modal(ConfigImportModal())
             return
         if action == "features":
+            if not can_use_panel(interaction, "features", "config.edit"):
+                await respond_with_error(interaction, "Access denied.", scope=SCOPE_SYSTEM)
+                return
             await interaction.response.send_message(embed=build_feature_flags_embed(interaction.guild), view=FeatureFlagView(), ephemeral=True)
             return
         if action == "scaling":
+            if not can_use_panel(interaction, "escalation", "escalation.edit"):
+                await respond_with_error(interaction, "Access denied.", scope=SCOPE_SYSTEM)
+                return
             await interaction.response.send_message(embed=build_escalation_matrix_embed(interaction.guild), view=EscalationMatrixView(), ephemeral=True)
             return
         if action == "replies":
+            if not can_use_panel(interaction, "modmail", "modmail.settings"):
+                await respond_with_error(interaction, "Access denied.", scope=SCOPE_SYSTEM)
+                return
             await interaction.response.send_message(embed=build_canned_replies_embed(interaction.guild), view=CannedRepliesView(), ephemeral=True)
 
 class ConfigDashboardView(ExpirableMixin, discord.ui.View):
@@ -707,6 +562,9 @@ class SetupDashboardActionSelect(discord.ui.Select):
     async def callback(self, interaction: discord.Interaction):
         action = self.values[0]
         if action == "modmail":
+            if not can_use_panel(interaction, "modmail", "modmail.settings"):
+                await respond_with_error(interaction, "Access denied.", scope=SCOPE_SYSTEM)
+                return
             await interaction.response.send_message(
                 embed=build_modmail_settings_embed(interaction.guild),
                 view=ModmailSettingsView(),
@@ -913,6 +771,10 @@ class ConfigTypeSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
+        panel_key = self.category
+        if not can_use_panel(interaction, panel_key, "config.edit"):
+            await respond_with_error(interaction, "Access denied.", scope=SCOPE_SYSTEM)
+            return
         key = self.values[0]
         name = next(o.label for o in self.options if o.value == key)
         

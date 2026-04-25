@@ -17,15 +17,15 @@ TOKEN_ENV_VARS = ("DISCORD_BOT_TOKEN", "MBX_BOT_TOKEN")
 # ---------------------------------------------------------------------------
 # Guild / Discord IDs  (fallbacks used before config.json is loaded)
 # ---------------------------------------------------------------------------
-DEFAULT_GUILD_ID = 1351136089259114516
-DEFAULT_ANCHOR_ROLE_ID = 1433987521133674597  # custom roles are positioned under this role
+DEFAULT_GUILD_ID = 0
+DEFAULT_ANCHOR_ROLE_ID = 0  # custom roles are positioned under this role
 
-DEFAULT_ROLE_OWNER = 1351544048934191185
-DEFAULT_ROLE_ADMIN = 1351544086556835921
-DEFAULT_ROLE_MOD = 1351544100482056254
-DEFAULT_ROLE_COMMUNITY_MANAGER = 1453995056586424340
-DEFAULT_ARCHIVE_CAT_ID = 1454629061556043890
-DEFAULT_SPAM_ROLE_ID = 1352841838985482322
+DEFAULT_ROLE_OWNER = 0
+DEFAULT_ROLE_ADMIN = 0
+DEFAULT_ROLE_MOD = 0
+DEFAULT_ROLE_COMMUNITY_MANAGER = 0
+DEFAULT_ARCHIVE_CAT_ID = 0
+DEFAULT_SPAM_ROLE_ID = 0
 
 # ---------------------------------------------------------------------------
 # Operational defaults

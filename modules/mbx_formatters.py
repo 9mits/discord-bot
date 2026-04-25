@@ -1,8 +1,4 @@
-"""Shared text and user formatting helpers.
-
-Extracted from mbx_legacy. Pure functions — no Discord API calls, no I/O.
-Depends only on discord.py types, mbx_utils, and stdlib.
-"""
+"""Shared text and user formatting helpers."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta

@@ -1,80 +1,15 @@
 """System, setup, safety, and administrative commands."""
 from __future__ import annotations
 
-import base64
+import logging
+from collections import Counter
+from datetime import timedelta
+from typing import Optional
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-import aiohttp
-import asyncio
-import copy
-import ipaddress
-from discord.ext import tasks
-import json
-import os
-import socket
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List, Union, Set, Tuple, Any
-from collections import Counter, deque, defaultdict
-import html
-import re
-import io
-import logging
-import tempfile
-from pathlib import Path
-from types import SimpleNamespace
-from urllib.parse import urlsplit
-from discord.http import Route
-from modules.mbx_constants import (
-    BRAND_NAME,
-    COOLDOWN_SECONDS,
-    DEFAULT_ARCHIVE_CAT_ID,
-    DEFAULT_MAX_UNREAD_PINGS,
-    DEFAULT_MESSAGE_CACHE_LIMIT,
-    DEFAULT_MESSAGE_CACHE_RETENTION_DAYS,
-    DEFAULT_RULES,
-    EMBED_PALETTE,
-    FEATURE_FLAG_LABELS,
-    HOLO_PRIMARY,
-    HOLO_SECONDARY,
-    HOLO_TERTIARY,
-    MODMAIL_PANEL_BANNER_URL,
-    MODMAIL_PANEL_CATEGORIES,
-    SCOPE_ANALYTICS,
-    SCOPE_MODERATION,
-    SCOPE_ROLES,
-    SCOPE_SUPPORT,
-    SCOPE_SYSTEM,
-    THEME_ORANGE,
-    TOKEN_ENV_VARS,
-)
-from modules.mbx_models import CaseNote
-from modules.mbx_services import (
-    DEFAULT_CANNED_REPLIES,
-    DEFAULT_ESCALATION_MATRIX,
-    DEFAULT_FEATURE_FLAGS,
-    DEFAULT_NATIVE_AUTOMOD_SETTINGS,
-    DEFAULT_SCHEMA_VERSION,
-    DEFAULT_TICKET_PRIORITIES,
-    export_case_payload,
-    export_config_payload,
-    get_feature_flag,
-    get_escalation_steps,
-    get_native_automod_settings,
-    has_capability,
-    import_config_payload,
-    normalize_case_record,
-    normalize_modmail_ticket,
-    resolve_escalation_duration,
-    resolve_native_automod_policy,
-    run_schema_migrations,
-    sanitize_evidence_links,
-    sanitize_linked_cases,
-    sanitize_tags,
-    ticket_needs_sla_alert,
-    validate_guild_configuration,
-)
+from modules.mbx_constants import DEFAULT_ARCHIVE_CAT_ID, SCOPE_ANALYTICS, SCOPE_SYSTEM
 from modules.mbx_context import abuse_system, bot, tree
 from modules.mbx_embeds import (
     _build_footer_text,
@@ -116,14 +51,12 @@ from modules.mbx_logging import (
 )
 from modules.mbx_permissions import (
     DANGEROUS_PERMISSIONS,
-    check_admin,
-    check_owner,
     get_context_guild,
-    get_primary_guild,
+    has_capability,
     has_dangerous_perm,
-    has_permission_capability,
     is_staff,
     is_staff_member,
+    require_capability,
     requires_setup,
     resolve_member,
     respond_with_error,
@@ -321,6 +254,7 @@ from modules.mbx_roles import (
     get_custom_role_limit,
     split_embed_entries,
 )
+from modules.mbx_services import get_feature_flag
 from modules.mbx_utils import (
     create_progress_bar,
     extract_snowflake_id,
@@ -503,16 +437,16 @@ def _categorise_commands() -> dict[str, list[str]]:
             buckets["Other"].append(f"`/{cmd.qualified_name}` — {cmd.description}")
     return {k: v for k, v in buckets.items() if v}
 
-@tree.command(name="setup", description="Open the configuration dashboard | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="setup", description="Open the configuration dashboard")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("setup.run")
 async def setup_cmd(interaction: discord.Interaction):
     embed = build_setup_dashboard_embed(interaction.guild)
     await interaction.response.send_message(embed=embed, view=SetupDashboardView(), ephemeral=True)
 
-@tree.command(name="listcommands", description="Browse all available commands by category | admin/owner")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="listcommands", description="Browse all available commands by category")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("setup.run")
 async def list_commands(interaction: discord.Interaction):
     buckets = _categorise_commands()
     embed = make_embed(
@@ -529,25 +463,15 @@ async def list_commands(interaction: discord.Interaction):
     msg = await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
     view.message = msg
 
-@tree.command(name="stats", description="Display comprehensive server-wide moderation analytics | admin")
+@tree.command(name="stats", description="Display comprehensive server-wide moderation analytics")
 @app_commands.default_permissions(manage_guild=True)
-@app_commands.check(check_admin)
+@require_capability("system.stats")
 async def stats(interaction: discord.Interaction, target: Optional[discord.Member] = None):
     if target:
         uid = str(target.id)
         cases = get_mod_cases(uid)
 
-        # Check if user is currently staff or has history
-        target_is_staff = False
-        if target.guild_permissions.administrator:
-            target_is_staff = True
-        else:
-            mod_role_ids = bot.data_manager.config.get("mod_roles", [])
-            if mod_role_ids:
-                if any(r.id in mod_role_ids for r in target.roles):
-                    target_is_staff = True
-            elif target.guild_permissions.moderate_members:
-                target_is_staff = True
+        target_is_staff = is_staff_member(target)
 
         if not target_is_staff and not cases:
             await interaction.response.send_message(f"{target.mention} is not a staff member and has no recorded history.", ephemeral=True)
@@ -615,23 +539,43 @@ async def stats(interaction: discord.Interaction, target: Optional[discord.Membe
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@tree.command(name="directory", description="Display staff team directory | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="directory", description="Display staff team directory")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("system.directory")
 async def directory(interaction: discord.Interaction):
+    from modules.mbx_permission_engine import PermissionEngine
+
     await interaction.response.defer(ephemeral=True)
 
-    admins = []
-    mods = []
-    mod_role_ids = bot.data_manager.config.get("mod_roles", [])
+    config = bot.data_manager.config
+    engine = PermissionEngine.for_guild(config)
+    guild_owner_id = interaction.guild.owner_id
+
+    admins: list[discord.Member] = []
+    mods: list[discord.Member] = []
 
     for member in interaction.guild.members:
-        if member.bot: continue
-        if member.guild_permissions.administrator:
+        if member.bot:
+            continue
+        role_ids = [int(r.id) for r in member.roles]
+        is_admin = engine.has_capability(
+            "setup.run",
+            user_id=int(member.id),
+            role_ids=role_ids,
+            guild_owner_id=guild_owner_id,
+            discord_permissions=member.guild_permissions,
+        )
+        if is_admin:
             admins.append(member)
-        elif any(r.id in mod_role_ids for r in member.roles):
-            mods.append(member)
-        elif not mod_role_ids and member.guild_permissions.moderate_members:
+            continue
+        is_mod = engine.has_capability(
+            "mod.case_panel",
+            user_id=int(member.id),
+            role_ids=role_ids,
+            guild_owner_id=guild_owner_id,
+            discord_permissions=member.guild_permissions,
+        )
+        if is_mod:
             mods.append(member)
 
     admins.sort(key=lambda m: m.top_role.position, reverse=True)
@@ -664,9 +608,9 @@ async def directory(interaction: discord.Interaction):
     view = StaffView(unique_staff) if unique_staff else None
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-@tree.command(name="config", description="Open the bot settings panel | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="config", description="Open the bot settings panel")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("config.edit")
 async def config_cmd(interaction: discord.Interaction):
     if not get_feature_flag(bot.data_manager.config, "config_panel", True):
         await respond_with_error(interaction, "The bot settings panel is currently turned off in the feature settings.", scope=SCOPE_SYSTEM)
@@ -674,15 +618,17 @@ async def config_cmd(interaction: discord.Interaction):
     embed = build_config_dashboard_embed(interaction.guild)
     await interaction.response.send_message(embed=embed, view=ConfigDashboardView(), ephemeral=True)
 
-@tree.command(name="publicexecution", description="Start a public vote to ban a user | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="publicexecution", description="Start a public vote to ban a user")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("mod.public_punish")
 async def publicexecution(interaction: discord.Interaction, user: discord.User, reaction_count: int):
+    from cogs.moderation import show_punish_menu
+
     await show_punish_menu(interaction, user, public=True, reaction_count=reaction_count)
 
-@tree.command(name="internals", description="View system constants and definitions | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="internals", description="View system constants and definitions")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("system.internals")
 async def internals(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     conf = bot.data_manager.config
@@ -724,9 +670,9 @@ async def internals(interaction: discord.Interaction):
 
     await interaction.followup.send(embed=embed, ephemeral=True)
 
-@tree.command(name="archive", description="Move this channel to the archive category | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="archive", description="Move this channel to the archive category")
+@app_commands.default_permissions(manage_channels=True)
+@require_capability("system.archive")
 async def archive(interaction: discord.Interaction):
     # Do not defer immediately, we need to send the confirmation view first
     channel = interaction.channel
@@ -761,9 +707,9 @@ async def archive(interaction: discord.Interaction):
     view = ArchiveConfirmView(channel, target_cat, old_name, new_name, overwrites_data, final_overwrites)
     await interaction.response.send_message(f"Are you sure you want to archive **{channel.name}**?", view=view, ephemeral=True)
 
-@tree.command(name="unarchive", description="Restore this channel from the archives | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="unarchive", description="Restore this channel from the archives")
+@app_commands.default_permissions(manage_channels=True)
+@require_capability("system.archive")
 async def unarchive(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     channel = interaction.channel
@@ -832,9 +778,9 @@ async def unarchive(interaction: discord.Interaction):
     log_embed.add_field(name="Restored Name", value=new_name, inline=True)
     await send_log(interaction.guild, log_embed)
 
-@tree.command(name="clone", description="Archive current channel and create a fresh clone | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="clone", description="Archive current channel and create a fresh clone")
+@app_commands.default_permissions(manage_channels=True)
+@require_capability("system.archive")
 async def clone(interaction: discord.Interaction):
     channel = interaction.channel
     guild = interaction.guild
@@ -866,27 +812,23 @@ async def clone(interaction: discord.Interaction):
     view = CloneConfirmView(channel, target_cat, old_name, new_name, overwrites_data, final_overwrites)
     await interaction.response.send_message(f"**WARNING:** This will archive **{channel.name}** and create a fresh clone.\nAre you sure?", view=view, ephemeral=True)
 
-@tree.command(name="rules", description="Configure automated punishment escalation rules | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="rules", description="Configure automated punishment escalation rules")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("rules.edit")
 async def rules(interaction: discord.Interaction):
     await interaction.response.send_message(embed=build_rules_dashboard_embed(interaction.guild), view=RulesDashboardView(), ephemeral=True)
 
-@tree.command(name="branding", description="Customize the bot's look for this server | admin")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_admin)
+@tree.command(name="branding", description="Customize the bot's look for this server")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("branding.edit")
 async def branding_cmd(interaction: discord.Interaction):
     embed = _build_branding_panel_embed(interaction.guild)
     await interaction.response.send_message(embed=embed, view=BrandingPanelView(), ephemeral=True)
 
-@tree.command(name="safetypanel", description="Manage anti-nuke immunity settings | owner")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_owner)
-async def safety_panel(interaction: discord.Interaction, key: str):
-    if key != "saori":
-        await interaction.response.send_message("**Access Denied:** Invalid Security Key.", ephemeral=True)
-        return
-
+@tree.command(name="safetypanel", description="Manage anti-nuke immunity settings")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("system.safety")
+async def safety_panel(interaction: discord.Interaction):
     embed = make_embed(
         "Anti-Nuke Safety Panel",
         "> Manage users who are immune to automated anti-nuke enforcement.",
@@ -896,9 +838,9 @@ async def safety_panel(interaction: discord.Interaction, key: str):
     )
     await interaction.response.send_message(embed=embed, view=SafetyView(), ephemeral=True)
 
-@tree.command(name="access", description="Manage role-based access to moderation tools | owner")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_owner)
+@tree.command(name="access", description="Manage role-based access to moderation tools")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("permissions.edit")
 async def access(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     roles = bot.data_manager.config.get("mod_roles", [])
@@ -914,9 +856,9 @@ async def access(interaction: discord.Interaction):
     view = AccessView()
     await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-@tree.command(name="lockdown", description="Emergency: hide all channels from @everyone | owner")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_owner)
+@tree.command(name="lockdown", description="Emergency: hide all channels from @everyone")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("system.lockdown")
 async def lockdown(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
@@ -947,9 +889,9 @@ async def lockdown(interaction: discord.Interaction):
 
     await interaction.followup.send(f"**SERVER LOCKDOWN ACTIVE.**\n> Hidden {channels_affected} channels from @everyone.", ephemeral=True)
 
-@tree.command(name="unlockdown", description="Restore channel visibility after lockdown | owner")
-@app_commands.default_permissions(administrator=True)
-@app_commands.check(check_owner)
+@tree.command(name="unlockdown", description="Restore channel visibility after lockdown")
+@app_commands.default_permissions(manage_guild=True)
+@require_capability("system.lockdown")
 async def unlockdown(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     guild = interaction.guild
@@ -1061,41 +1003,10 @@ async def on_guild_role_update(before: discord.Role, after: discord.Role):
                 await punish_rogue_mod(after.guild, actor, f"Added dangerous permissions to role **{after.name}**", embed=embed, restore_data=restore_data)
                 break
 
-@bot.command()
-async def sync(ctx):
-    """Admin override: force re-sync slash commands. Normally not needed — bot auto-syncs on startup."""
-    if not ctx.guild:
-        await ctx.send("This command can only be used in a server.")
-        return
-    if bot.data_manager:
-        bot.data_manager._current_guild_id = ctx.guild.id
-        await bot.data_manager.ensure_guild_loaded(ctx.guild.id)
-
-    # Permission check
-    owner_role = bot.data_manager.config.get("role_owner") if bot.data_manager else None
-    is_owner = ctx.author.id == ctx.guild.owner_id
-    has_role = owner_role and any(r.id == owner_role for r in ctx.author.roles)
-    is_admin = ctx.author.guild_permissions.administrator
-
-    if not (is_owner or has_role or is_admin):
-        await ctx.send("Access Denied: You need the Owner role, Server Owner status, or Administrator permission.")
-        return
-
-    msg = await ctx.send("Syncing global slash commands...")
-    try:
-        cmds = await bot.tree.sync()
-        await msg.edit(content=f"Synced **{len(cmds)}** global slash command(s). All servers will see updates within ~1 hour.")
-    except Exception as exc:
-        await msg.edit(content=f"Sync failed: {exc}")
-    logger.info(f"Synced commands: {[c.name for c in cmds]}")
-
-@tree.command(name="status", description="View bot latency and uptime | mod")
+@tree.command(name="status", description="View bot latency and uptime")
 @app_commands.default_permissions(moderate_members=True)
+@require_capability("system.status")
 async def status_cmd(interaction: discord.Interaction):
-    if not is_staff(interaction):
-        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
-        return
-
     embed = build_status_embed(interaction.guild)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -1170,5 +1081,4 @@ async def setup(bot_instance: commands.Bot) -> None:
     bot_instance.tree.add_command(status_cmd)
     bot_instance.add_listener(on_guild_role_update, "on_guild_role_update")
     bot_instance.add_listener(on_member_update, "on_member_update")
-    bot_instance.add_command(sync)
     bot_instance.tree.on_error = on_app_command_error

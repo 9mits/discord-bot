@@ -43,7 +43,7 @@ from modules.mbx_logging import (
     send_punishment_log,
 )
 from modules.mbx_permissions import (
-    get_primary_guild,
+    has_capability,
     is_staff as _permission_is_staff,
     is_staff_member,
     resolve_member,
@@ -65,35 +65,22 @@ logger = logging.getLogger("MGXBot")
 
 
 def AntiNukeResolveView(*args, **kwargs):
-    from ui.config import AntiNukeResolveView as view_cls
-
-    return view_cls(*args, **kwargs)
+    from ui.config import AntiNukeResolveView as _cls
+    return _cls(*args, **kwargs)
 
 
 def AppealView(*args, **kwargs):
-    from ui.moderation import AppealView as view_cls
-
-    return view_cls(*args, **kwargs)
+    from ui.moderation import AppealView as _cls
+    return _cls(*args, **kwargs)
 
 
 def AutoModWarningView(*args, **kwargs):
-    from ui.automod import AutoModWarningView as view_cls
-
-    return view_cls(*args, **kwargs)
-
-
-def is_staff(*args, **kwargs):
-    from modules import mbx_legacy
-
-    legacy_check = getattr(mbx_legacy, "is_staff", _permission_is_staff)
-    return legacy_check(*args, **kwargs)
+    from ui.automod import AutoModWarningView as _cls
+    return _cls(*args, **kwargs)
 
 
-def respond_with_error(*args, **kwargs):
-    from modules import mbx_legacy
-
-    legacy_response = getattr(mbx_legacy, "respond_with_error", _permission_respond_with_error)
-    return legacy_response(*args, **kwargs)
+is_staff = _permission_is_staff
+respond_with_error = _permission_respond_with_error
 
 
 def calculate_smart_punishment(user_id: str, reason: str, rules: dict, history: list) -> tuple[int, bool, str]:
@@ -1306,11 +1293,11 @@ async def apply_automod_report_response(
     response_text: str,
     source_message: Optional[discord.Message],
 ) -> bool:
-    if not is_staff(interaction):
+    if not has_capability(interaction, "automod.respond"):
         await respond_with_error(interaction, "Access denied.", scope=SCOPE_MODERATION)
         return False
 
-    guild = bot.get_guild(guild_id) or interaction.guild or get_primary_guild()
+    guild = bot.get_guild(guild_id) or interaction.guild
     if guild is None:
         await respond_with_error(interaction, "The server for this AutoMod report could not be resolved.", scope=SCOPE_MODERATION)
         return False

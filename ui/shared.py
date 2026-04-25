@@ -1,206 +1,83 @@
 from __future__ import annotations
 
-import asyncio
-import copy
-import html
-import io
-import json
 import logging
-import re
-import time
-from collections import Counter, defaultdict, deque
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from datetime import timedelta
+from typing import Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
-from discord.http import Route
+from discord.ext import commands
 
-from modules.mbx_automod import *
-from modules.mbx_cases import *
-from modules.mbx_constants import *
+from modules.mbx_branding import (
+    _build_branding_panel_embed,
+    _refresh_branding_panel,
+    apply_guild_member_branding,
+    build_branding_error_embed,
+    save_branding_settings,
+)
+from modules.mbx_constants import SCOPE_ANALYTICS, SCOPE_SYSTEM
 from modules.mbx_context import abuse_system, bot, tree
-from modules.mbx_embeds import *
 from modules.mbx_embeds import (
-    _build_footer_text,
-    _build_footer_text_with_detail,
-    _format_branding_panel_value,
-    _get_branding_config,
-    _get_footer_icon_url,
-    _set_footer_branding,
+    brand_embed,
+    make_confirmation_embed,
+    make_embed,
+    make_empty_state_embed,
+    make_error_embed,
 )
-from modules.mbx_formatters import *
-from modules.mbx_images import *
-from modules.mbx_images import (
-    _format_image_size_limit,
-    _is_public_image_ip,
-    _make_image_data_uri,
-    _resolve_image_host_addresses,
+from modules.mbx_formatters import get_case_label, is_record_active
+from modules.mbx_images import fetch_image_bytes, fetch_image_data_uri
+from modules.mbx_logging import format_log_quote, format_reason_value
+from modules.mbx_modmail import (
+    _parse_user_id,
+    apply_modmail_ticket_state,
+    build_modmail_panel_embed,
+    export_modmail_transcript,
+    generate_transcript_html,
+    log_modmail_action,
+    maybe_send_dm_modmail_panel,
+    refresh_modmail_message,
+    refresh_modmail_ticket_log,
+    resolve_modmail_thread,
+    resolve_modmail_user,
+    send_modmail_panel_message,
+    send_modmail_thread_intro,
 )
-from modules.mbx_logging import *
-from modules.mbx_logging import _send_log_to_channels
-from modules.mbx_models import *
-from modules.mbx_permissions import *
-from modules.mbx_punish import build_punish_embed, execute_punishment
-from modules.mbx_roles import *
-from modules.mbx_services import *
-from modules.mbx_utils import *
+from modules.mbx_permissions import is_staff, resolve_member, respond_with_error
+from modules.mbx_public import (
+    build_public_execution_embed,
+    execute_public_execution_vote,
+    get_public_execution_action_label,
+)
+from modules.mbx_punish import get_valid_duration
+from modules.mbx_setup import (
+    build_canned_replies_embed,
+    build_config_dashboard_embed,
+    build_escalation_matrix_embed,
+    build_feature_flags_embed,
+    build_mod_help_embed,
+    build_modmail_settings_embed,
+    build_rules_dashboard_embed,
+    build_setup_dashboard_embed,
+    build_setup_validation_embed,
+    build_status_embed,
+    get_feature_flag_name,
+)
+from modules.mbx_staff import (
+    _split_case_input,
+    build_test_env_embed,
+    get_mod_cases,
+    get_staff_stats_embed,
+    log_case_management_action,
+)
+from modules.mbx_utils import format_duration, iso_to_dt, truncate_text
 
 
 logger = logging.getLogger("MGXBot")
 
 
-def _legacy_value(name: str):
-    from modules import mbx_legacy
-
-    return getattr(mbx_legacy, name)
-
-def get_valid_duration(*args, **kwargs):
-    return _legacy_value("get_valid_duration")(*args, **kwargs)
-
-def build_mod_help_embed(*args, **kwargs):
-    return _legacy_value("build_mod_help_embed")(*args, **kwargs)
-
-def build_modmail_panel_embed(*args, **kwargs):
-    return _legacy_value("build_modmail_panel_embed")(*args, **kwargs)
-
-def build_modmail_settings_embed(*args, **kwargs):
-    return _legacy_value("build_modmail_settings_embed")(*args, **kwargs)
-
-def build_config_dashboard_embed(*args, **kwargs):
-    return _legacy_value("build_config_dashboard_embed")(*args, **kwargs)
-
-def build_rules_dashboard_embed(*args, **kwargs):
-    return _legacy_value("build_rules_dashboard_embed")(*args, **kwargs)
-
-def build_setup_dashboard_embed(*args, **kwargs):
-    return _legacy_value("build_setup_dashboard_embed")(*args, **kwargs)
-
-def build_feature_flags_embed(*args, **kwargs):
-    return _legacy_value("build_feature_flags_embed")(*args, **kwargs)
-
-def build_escalation_matrix_embed(*args, **kwargs):
-    return _legacy_value("build_escalation_matrix_embed")(*args, **kwargs)
-
-def build_canned_replies_embed(*args, **kwargs):
-    return _legacy_value("build_canned_replies_embed")(*args, **kwargs)
-
-def build_setup_validation_embed(*args, **kwargs):
-    return _legacy_value("build_setup_validation_embed")(*args, **kwargs)
-
-def build_status_embed(*args, **kwargs):
-    return _legacy_value("build_status_embed")(*args, **kwargs)
-
-def get_feature_flag_name(*args, **kwargs):
-    return _legacy_value("get_feature_flag_name")(*args, **kwargs)
-
-def send_modmail_thread_intro(*args, **kwargs):
-    return _legacy_value("send_modmail_thread_intro")(*args, **kwargs)
-
-def send_modmail_panel_message(*args, **kwargs):
-    return _legacy_value("send_modmail_panel_message")(*args, **kwargs)
-
-def maybe_send_dm_modmail_panel(*args, **kwargs):
-    return _legacy_value("maybe_send_dm_modmail_panel")(*args, **kwargs)
-
-def log_modmail_action(*args, **kwargs):
-    return _legacy_value("log_modmail_action")(*args, **kwargs)
-
-def apply_modmail_ticket_state(*args, **kwargs):
-    return _legacy_value("apply_modmail_ticket_state")(*args, **kwargs)
-
-def refresh_modmail_message(*args, **kwargs):
-    return _legacy_value("refresh_modmail_message")(*args, **kwargs)
-
-def refresh_modmail_ticket_log(*args, **kwargs):
-    return _legacy_value("refresh_modmail_ticket_log")(*args, **kwargs)
-
-def export_modmail_transcript(*args, **kwargs):
-    return _legacy_value("export_modmail_transcript")(*args, **kwargs)
-
-def resolve_modmail_user(*args, **kwargs):
-    return _legacy_value("resolve_modmail_user")(*args, **kwargs)
-
-def resolve_modmail_thread(*args, **kwargs):
-    return _legacy_value("resolve_modmail_thread")(*args, **kwargs)
-
-def _parse_user_id(*args, **kwargs):
-    return _legacy_value("_parse_user_id")(*args, **kwargs)
-
-def get_mod_cases(*args, **kwargs):
-    return _legacy_value("get_mod_cases")(*args, **kwargs)
-
-def get_staff_stats_embed(*args, **kwargs):
-    return _legacy_value("get_staff_stats_embed")(*args, **kwargs)
-
-def build_test_env_embed(*args, **kwargs):
-    return _legacy_value("build_test_env_embed")(*args, **kwargs)
-
-def log_case_management_action(*args, **kwargs):
-    return _legacy_value("log_case_management_action")(*args, **kwargs)
-
-def _split_case_input(*args, **kwargs):
-    return _legacy_value("_split_case_input")(*args, **kwargs)
-
-def get_public_execution_action_label(*args, **kwargs):
-    return _legacy_value("get_public_execution_action_label")(*args, **kwargs)
-
-def build_public_execution_embed(*args, **kwargs):
-    return _legacy_value("build_public_execution_embed")(*args, **kwargs)
-
-def execute_public_execution_vote(*args, **kwargs):
-    return _legacy_value("execute_public_execution_vote")(*args, **kwargs)
-
-def _refresh_branding_panel(*args, **kwargs):
-    return _legacy_value("_refresh_branding_panel")(*args, **kwargs)
-
-def apply_guild_member_branding(*args, **kwargs):
-    return _legacy_value("apply_guild_member_branding")(*args, **kwargs)
-
-def save_branding_settings(*args, **kwargs):
-    return _legacy_value("save_branding_settings")(*args, **kwargs)
-
-def build_branding_error_embed(*args, **kwargs):
-    return _legacy_value("build_branding_error_embed")(*args, **kwargs)
-
-def _build_branding_panel_embed(*args, **kwargs):
-    return _legacy_value("_build_branding_panel_embed")(*args, **kwargs)
-
-def show_punish_menu(*args, **kwargs):
-    return _legacy_value("show_punish_menu")(*args, **kwargs)
-
-def show_history_menu(*args, **kwargs):
-    return _legacy_value("show_history_menu")(*args, **kwargs)
-
-def show_case_panel(*args, **kwargs):
-    return _legacy_value("show_case_panel")(*args, **kwargs)
-
-def list_commands(*args, **kwargs):
-    return _legacy_value("list_commands")(*args, **kwargs)
-
-def _categorise_commands(*args, **kwargs):
-    return _legacy_value("_categorise_commands")(*args, **kwargs)
-
-def generate_transcript_html(*args, **kwargs):
-    return _legacy_value("generate_transcript_html")(*args, **kwargs)
-
-def is_staff(*args, **kwargs):
-    return _legacy_value("is_staff")(*args, **kwargs)
-
-def respond_with_error(*args, **kwargs):
-    return _legacy_value("respond_with_error")(*args, **kwargs)
-
-def resolve_member(*args, **kwargs):
-    return _legacy_value("resolve_member")(*args, **kwargs)
-
-def fetch_image_bytes(*args, **kwargs):
-    return _legacy_value("fetch_image_bytes")(*args, **kwargs)
-
-def fetch_image_data_uri(*args, **kwargs):
-    return _legacy_value("fetch_image_data_uri")(*args, **kwargs)
+def _categorise_commands():
+    from cogs.system import _categorise_commands as _impl
+    return _impl()
 
 class ExpirableMixin:
     """

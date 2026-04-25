@@ -1,80 +1,15 @@
 """Moderation commands and context menus."""
 from __future__ import annotations
 
-import base64
+import asyncio
+import logging
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List, Union
+
 import discord
 from discord import app_commands
 from discord.ext import commands
-import aiohttp
-import asyncio
-import copy
-import ipaddress
-from discord.ext import tasks
-import json
-import os
-import socket
-import time
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List, Union, Set, Tuple, Any
-from collections import Counter, deque, defaultdict
-import html
-import re
-import io
-import logging
-import tempfile
-from pathlib import Path
-from types import SimpleNamespace
-from urllib.parse import urlsplit
-from discord.http import Route
-from modules.mbx_constants import (
-    BRAND_NAME,
-    COOLDOWN_SECONDS,
-    DEFAULT_ARCHIVE_CAT_ID,
-    DEFAULT_MAX_UNREAD_PINGS,
-    DEFAULT_MESSAGE_CACHE_LIMIT,
-    DEFAULT_MESSAGE_CACHE_RETENTION_DAYS,
-    DEFAULT_RULES,
-    EMBED_PALETTE,
-    FEATURE_FLAG_LABELS,
-    HOLO_PRIMARY,
-    HOLO_SECONDARY,
-    HOLO_TERTIARY,
-    MODMAIL_PANEL_BANNER_URL,
-    MODMAIL_PANEL_CATEGORIES,
-    SCOPE_ANALYTICS,
-    SCOPE_MODERATION,
-    SCOPE_ROLES,
-    SCOPE_SUPPORT,
-    SCOPE_SYSTEM,
-    THEME_ORANGE,
-    TOKEN_ENV_VARS,
-)
-from modules.mbx_models import CaseNote
-from modules.mbx_services import (
-    DEFAULT_CANNED_REPLIES,
-    DEFAULT_ESCALATION_MATRIX,
-    DEFAULT_FEATURE_FLAGS,
-    DEFAULT_NATIVE_AUTOMOD_SETTINGS,
-    DEFAULT_SCHEMA_VERSION,
-    DEFAULT_TICKET_PRIORITIES,
-    export_case_payload,
-    export_config_payload,
-    get_feature_flag,
-    get_escalation_steps,
-    get_native_automod_settings,
-    has_capability,
-    import_config_payload,
-    normalize_case_record,
-    normalize_modmail_ticket,
-    resolve_escalation_duration,
-    resolve_native_automod_policy,
-    run_schema_migrations,
-    sanitize_evidence_links,
-    sanitize_linked_cases,
-    sanitize_tags,
-    ticket_needs_sla_alert,
-    validate_guild_configuration,
-)
+from modules.mbx_constants import SCOPE_MODERATION
 from modules.mbx_context import abuse_system, bot, tree
 from modules.mbx_embeds import (
     _build_footer_text,
@@ -116,14 +51,12 @@ from modules.mbx_logging import (
 )
 from modules.mbx_permissions import (
     DANGEROUS_PERMISSIONS,
-    check_admin,
-    check_owner,
     get_context_guild,
-    get_primary_guild,
+    has_capability,
     has_dangerous_perm,
-    has_permission_capability,
     is_staff,
     is_staff_member,
+    require_capability,
     requires_setup,
     resolve_member,
     respond_with_error,
@@ -321,6 +254,7 @@ from modules.mbx_roles import (
     get_custom_role_limit,
     split_embed_entries,
 )
+from modules.mbx_services import get_feature_flag
 from modules.mbx_utils import (
     create_progress_bar,
     extract_snowflake_id,
@@ -579,28 +513,38 @@ class ModGroup(app_commands.Group):
         super().__init__(name="mod", description="Advanced moderation suite")
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if not is_staff(interaction):
-            await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+        # Group-level gate: anyone with any moderation capability passes.
+        # Each subcommand applies its own narrower capability check below.
+        if not has_capability(interaction, "mod.case_panel"):
+            await respond_with_error(
+                interaction,
+                "You do not have permission to use these moderation tools.",
+                scope=SCOPE_MODERATION,
+            )
             return False
         return True
 
-    @app_commands.command(name="punish", description="Sanction a user with a warning, timeout, or ban | mod")
+    @app_commands.command(name="punish", description="Sanction a user with a warning, timeout, or ban")
     @app_commands.default_permissions(moderate_members=True)
+    @require_capability("mod.punish")
     async def punish(self, interaction: discord.Interaction, user: discord.User):
         await show_punish_menu(interaction, user)
 
-    @app_commands.command(name="publicpunish", description="Punish a user and announce it publicly in this channel | mod")
+    @app_commands.command(name="publicpunish", description="Punish a user and announce it publicly in this channel")
     @app_commands.default_permissions(moderate_members=True)
+    @require_capability("mod.public_punish")
     async def publicpunish(self, interaction: discord.Interaction, user: discord.User):
         await show_punish_menu(interaction, user, public=True)
 
-    @app_commands.command(name="history", description="Retrieve the complete disciplinary history of a user | mod")
+    @app_commands.command(name="history", description="Retrieve the complete disciplinary history of a user")
     @app_commands.default_permissions(moderate_members=True)
+    @require_capability("mod.history")
     async def history(self, interaction: discord.Interaction, user: discord.Member):
         await show_history_menu(interaction, user)
 
-    @app_commands.command(name="active", description="Display a list of all currently active punishments | mod")
+    @app_commands.command(name="active", description="Display a list of all currently active punishments")
     @app_commands.default_permissions(moderate_members=True)
+    @require_capability("mod.active")
     async def active(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         now = discord.utils.utcnow()
@@ -636,15 +580,17 @@ class ModGroup(app_commands.Group):
         view = ActiveView(active_list)
         await interaction.followup.send(embed=embed, view=view, ephemeral=True)
 
-    @app_commands.command(name="undopunish", description="Open the punishment undo control panel | mod")
+    @app_commands.command(name="undopunish", description="Open the punishment undo control panel")
     @app_commands.describe(reason="Optional reason to prefill in the undo panel")
     @app_commands.default_permissions(moderate_members=True)
+    @require_capability("mod.undo")
     async def undopunish(self, interaction: discord.Interaction, user: discord.Member, reason: Optional[str] = None):
         await show_history_menu(interaction, user, mode="undo", initial_undo_reason=reason)
 
-    @app_commands.command(name="purge", description="Bulk delete messages (Channel or User) | mod")
+    @app_commands.command(name="purge", description="Bulk delete messages (Channel or User)")
     @app_commands.describe(amount="Messages to check/delete (max 999)", user="Optional: Target specific user", keyword="Optional: Filter by keyword")
     @app_commands.default_permissions(manage_messages=True)
+    @require_capability("mod.purge")
     async def purge(self, interaction: discord.Interaction, amount: int, user: discord.Member = None, keyword: str = None):
         if amount < 1 or amount > 999:
             await interaction.response.send_message("Amount must be between 1 and 999.", ephemeral=True)
@@ -737,8 +683,9 @@ class ModGroup(app_commands.Group):
         if keyword: log_embed.add_field(name="Keyword", value=keyword, inline=True)
         await send_punishment_log(interaction.guild, log_embed)
 
-    @app_commands.command(name="lock", description="Restrict message sending permissions in this channel | mod")
+    @app_commands.command(name="lock", description="Restrict message sending permissions in this channel")
     @app_commands.default_permissions(manage_channels=True)
+    @require_capability("mod.lock")
     async def lock(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
@@ -762,8 +709,9 @@ class ModGroup(app_commands.Group):
         except Exception as e:
             await interaction.followup.send(f"Error: {e}", ephemeral=True)
 
-    @app_commands.command(name="unlock", description="Restore message sending permissions in this channel | mod")
+    @app_commands.command(name="unlock", description="Restore message sending permissions in this channel")
     @app_commands.default_permissions(manage_channels=True)
+    @require_capability("mod.lock")
     async def unlock(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         channel = interaction.channel
@@ -790,24 +738,25 @@ class ModGroup(app_commands.Group):
         embed = build_mod_help_embed(interaction.guild)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="case", description="Open the case panel for a user or case ID | mod")
+    @app_commands.command(name="case", description="Open the case panel for a user or case ID")
     @app_commands.describe(case_id="Open a specific case by ID", user="Open the most recent case for a user")
+    @require_capability("mod.case_panel")
     async def case(self, interaction: discord.Interaction, case_id: Optional[app_commands.Range[int, 1, 999999]] = None, user: Optional[discord.Member] = None):
         await show_case_panel(interaction, case_id=case_id, user=user)
 
 @tree.context_menu(name="Punish User")
 @app_commands.default_permissions(moderate_members=True)
 async def punish_context(interaction: discord.Interaction, user: discord.User):
-    if not is_staff(interaction):
-        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+    if not has_capability(interaction, "mod.punish"):
+        await respond_with_error(interaction, "You do not have permission to use this command.", scope=SCOPE_MODERATION)
         return
     await show_punish_menu(interaction, user)
 
 @tree.context_menu(name="Mod History")
 @app_commands.default_permissions(moderate_members=True)
 async def history_context(interaction: discord.Interaction, user: discord.Member):
-    if not is_staff(interaction):
-        await interaction.response.send_message("You do not have permission to use this command.", ephemeral=True)
+    if not has_capability(interaction, "mod.history"):
+        await respond_with_error(interaction, "You do not have permission to use this command.", scope=SCOPE_MODERATION)
         return
     await show_history_menu(interaction, user)
 

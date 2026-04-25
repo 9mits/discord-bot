@@ -1,9 +1,4 @@
-"""Embed builders and branding-footer helpers.
-
-Extracted from mbx_legacy as part of the phased refactor. Owned by core/ in the
-target structure; for now kept as a flat module so call sites keep working via
-re-export from mbx_legacy.
-"""
+"""Embed builders and branding-footer helpers."""
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
@@ -20,22 +15,13 @@ from modules.mbx_context import bot
 from modules.mbx_utils import truncate_text
 
 
-def _legacy_value(name: str):
-    try:
-        from modules import mbx_legacy
-
-        return getattr(mbx_legacy, name)
-    except Exception:
-        return None
-
-
 def _active_bot():
-    return _legacy_value("bot") or bot
+    return bot
 
 
 def _get_data_manager():
     try:
-        return getattr(_active_bot(), "data_manager", None)
+        return getattr(bot, "data_manager", None)
     except RuntimeError:
         return None
 
@@ -63,9 +49,6 @@ def fmt_channel(guild: Optional[discord.Guild], channel_id: Optional[int]) -> st
 
 
 def _get_branding_config(guild_id: int) -> Dict[str, Any]:
-    override = _legacy_value("_get_branding_config")
-    if override is not None and override is not _get_branding_config:
-        return override(guild_id)
     data_manager = _get_data_manager()
     if data_manager is None:
         return {}

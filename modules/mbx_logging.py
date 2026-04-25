@@ -1,9 +1,4 @@
-"""Log channel dispatch + action-log embed construction.
-
-Extracted from mbx_legacy. Mixes two concerns (pure formatters + channel
-dispatch) on purpose — the split into `core/logging.py` vs `core/log_format.py`
-can happen later; right now the priority is getting these out of the monolith.
-"""
+"""Log channel dispatch + action-log embed construction."""
 from __future__ import annotations
 
 import io

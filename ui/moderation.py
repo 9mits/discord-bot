@@ -1,207 +1,61 @@
 from __future__ import annotations
 
-import asyncio
-import copy
-import html
 import io
 import json
 import logging
-import re
-import time
-from collections import Counter, defaultdict, deque
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import List, Optional, Union
 
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
-from discord.http import Route
+from discord.ext import commands
 
-from modules.mbx_automod import *
-from modules.mbx_cases import *
-from modules.mbx_constants import *
+from modules.mbx_automod import calculate_smart_punishment, is_staff, respond_with_error
+from modules.mbx_cases import (
+    UNDO_REASON_PRESETS,
+    build_active_punishments_embed,
+    build_case_detail_embed,
+    build_history_archive_attachment,
+    build_history_case_detail_embed,
+    build_history_cleared_log_embed,
+    build_history_overview_embed,
+    build_no_history_embed,
+    build_punishment_undo_log_embed,
+    build_undo_panel_embed,
+    clear_user_history_records,
+    format_case_summary_block,
+    get_undo_reason_details,
+    undo_case_record,
+)
+from modules.mbx_constants import DEFAULT_RULES, EMBED_PALETTE, SCOPE_MODERATION
 from modules.mbx_context import abuse_system, bot, tree
-from modules.mbx_embeds import *
-from modules.mbx_embeds import (
-    _build_footer_text,
-    _build_footer_text_with_detail,
-    _format_branding_panel_value,
-    _get_branding_config,
-    _get_footer_icon_url,
-    _set_footer_branding,
+from modules.mbx_embeds import brand_embed, make_confirmation_embed, make_embed, make_empty_state_embed
+from modules.mbx_formatters import (
+    describe_punishment_record,
+    format_case_status,
+    format_user_id_ref,
+    format_user_ref,
+    get_case_id,
+    get_case_label,
 )
-from modules.mbx_formatters import *
-from modules.mbx_images import *
-from modules.mbx_images import (
-    _format_image_size_limit,
-    _is_public_image_ip,
-    _make_image_data_uri,
-    _resolve_image_host_addresses,
+from modules.mbx_logging import format_reason_value, make_action_log_embed, send_punishment_log
+from modules.mbx_models import CaseNote
+from modules.mbx_permissions import has_capability, is_staff, resolve_member, respond_with_error
+from modules.mbx_public import build_public_execution_embed, execute_public_execution_vote
+from modules.mbx_punish import build_punish_embed, execute_punishment, get_valid_duration
+from modules.mbx_services import (
+    export_case_payload,
+    normalize_case_record,
+    sanitize_evidence_links,
+    sanitize_linked_cases,
+    sanitize_tags,
 )
-from modules.mbx_logging import *
-from modules.mbx_logging import _send_log_to_channels
-from modules.mbx_models import *
-from modules.mbx_permissions import *
-from modules.mbx_punish import build_punish_embed, execute_punishment
-from modules.mbx_roles import *
-from modules.mbx_services import *
-from modules.mbx_utils import *
+from modules.mbx_setup import build_mod_help_embed
+from modules.mbx_staff import _split_case_input, log_case_management_action
+from modules.mbx_utils import format_duration, iso_to_dt, now_iso, parse_duration_str, truncate_text
 from ui.shared import ExpirableMixin
 
 
 logger = logging.getLogger("MGXBot")
-
-
-def _legacy_value(name: str):
-    from modules import mbx_legacy
-
-    return getattr(mbx_legacy, name)
-
-def get_valid_duration(*args, **kwargs):
-    return _legacy_value("get_valid_duration")(*args, **kwargs)
-
-def build_mod_help_embed(*args, **kwargs):
-    return _legacy_value("build_mod_help_embed")(*args, **kwargs)
-
-def build_modmail_panel_embed(*args, **kwargs):
-    return _legacy_value("build_modmail_panel_embed")(*args, **kwargs)
-
-def build_modmail_settings_embed(*args, **kwargs):
-    return _legacy_value("build_modmail_settings_embed")(*args, **kwargs)
-
-def build_config_dashboard_embed(*args, **kwargs):
-    return _legacy_value("build_config_dashboard_embed")(*args, **kwargs)
-
-def build_rules_dashboard_embed(*args, **kwargs):
-    return _legacy_value("build_rules_dashboard_embed")(*args, **kwargs)
-
-def build_setup_dashboard_embed(*args, **kwargs):
-    return _legacy_value("build_setup_dashboard_embed")(*args, **kwargs)
-
-def build_feature_flags_embed(*args, **kwargs):
-    return _legacy_value("build_feature_flags_embed")(*args, **kwargs)
-
-def build_escalation_matrix_embed(*args, **kwargs):
-    return _legacy_value("build_escalation_matrix_embed")(*args, **kwargs)
-
-def build_canned_replies_embed(*args, **kwargs):
-    return _legacy_value("build_canned_replies_embed")(*args, **kwargs)
-
-def build_setup_validation_embed(*args, **kwargs):
-    return _legacy_value("build_setup_validation_embed")(*args, **kwargs)
-
-def build_status_embed(*args, **kwargs):
-    return _legacy_value("build_status_embed")(*args, **kwargs)
-
-def get_feature_flag_name(*args, **kwargs):
-    return _legacy_value("get_feature_flag_name")(*args, **kwargs)
-
-def send_modmail_thread_intro(*args, **kwargs):
-    return _legacy_value("send_modmail_thread_intro")(*args, **kwargs)
-
-def send_modmail_panel_message(*args, **kwargs):
-    return _legacy_value("send_modmail_panel_message")(*args, **kwargs)
-
-def maybe_send_dm_modmail_panel(*args, **kwargs):
-    return _legacy_value("maybe_send_dm_modmail_panel")(*args, **kwargs)
-
-def log_modmail_action(*args, **kwargs):
-    return _legacy_value("log_modmail_action")(*args, **kwargs)
-
-def apply_modmail_ticket_state(*args, **kwargs):
-    return _legacy_value("apply_modmail_ticket_state")(*args, **kwargs)
-
-def refresh_modmail_message(*args, **kwargs):
-    return _legacy_value("refresh_modmail_message")(*args, **kwargs)
-
-def refresh_modmail_ticket_log(*args, **kwargs):
-    return _legacy_value("refresh_modmail_ticket_log")(*args, **kwargs)
-
-def export_modmail_transcript(*args, **kwargs):
-    return _legacy_value("export_modmail_transcript")(*args, **kwargs)
-
-def resolve_modmail_user(*args, **kwargs):
-    return _legacy_value("resolve_modmail_user")(*args, **kwargs)
-
-def resolve_modmail_thread(*args, **kwargs):
-    return _legacy_value("resolve_modmail_thread")(*args, **kwargs)
-
-def _parse_user_id(*args, **kwargs):
-    return _legacy_value("_parse_user_id")(*args, **kwargs)
-
-def get_mod_cases(*args, **kwargs):
-    return _legacy_value("get_mod_cases")(*args, **kwargs)
-
-def get_staff_stats_embed(*args, **kwargs):
-    return _legacy_value("get_staff_stats_embed")(*args, **kwargs)
-
-def build_test_env_embed(*args, **kwargs):
-    return _legacy_value("build_test_env_embed")(*args, **kwargs)
-
-def log_case_management_action(*args, **kwargs):
-    return _legacy_value("log_case_management_action")(*args, **kwargs)
-
-def _split_case_input(*args, **kwargs):
-    return _legacy_value("_split_case_input")(*args, **kwargs)
-
-def get_public_execution_action_label(*args, **kwargs):
-    return _legacy_value("get_public_execution_action_label")(*args, **kwargs)
-
-def build_public_execution_embed(*args, **kwargs):
-    return _legacy_value("build_public_execution_embed")(*args, **kwargs)
-
-def execute_public_execution_vote(*args, **kwargs):
-    return _legacy_value("execute_public_execution_vote")(*args, **kwargs)
-
-def _refresh_branding_panel(*args, **kwargs):
-    return _legacy_value("_refresh_branding_panel")(*args, **kwargs)
-
-def apply_guild_member_branding(*args, **kwargs):
-    return _legacy_value("apply_guild_member_branding")(*args, **kwargs)
-
-def save_branding_settings(*args, **kwargs):
-    return _legacy_value("save_branding_settings")(*args, **kwargs)
-
-def build_branding_error_embed(*args, **kwargs):
-    return _legacy_value("build_branding_error_embed")(*args, **kwargs)
-
-def _build_branding_panel_embed(*args, **kwargs):
-    return _legacy_value("_build_branding_panel_embed")(*args, **kwargs)
-
-def show_punish_menu(*args, **kwargs):
-    return _legacy_value("show_punish_menu")(*args, **kwargs)
-
-def show_history_menu(*args, **kwargs):
-    return _legacy_value("show_history_menu")(*args, **kwargs)
-
-def show_case_panel(*args, **kwargs):
-    return _legacy_value("show_case_panel")(*args, **kwargs)
-
-def list_commands(*args, **kwargs):
-    return _legacy_value("list_commands")(*args, **kwargs)
-
-def _categorise_commands(*args, **kwargs):
-    return _legacy_value("_categorise_commands")(*args, **kwargs)
-
-def generate_transcript_html(*args, **kwargs):
-    return _legacy_value("generate_transcript_html")(*args, **kwargs)
-
-def is_staff(*args, **kwargs):
-    return _legacy_value("is_staff")(*args, **kwargs)
-
-def respond_with_error(*args, **kwargs):
-    return _legacy_value("respond_with_error")(*args, **kwargs)
-
-def resolve_member(*args, **kwargs):
-    return _legacy_value("resolve_member")(*args, **kwargs)
-
-def fetch_image_bytes(*args, **kwargs):
-    return _legacy_value("fetch_image_bytes")(*args, **kwargs)
-
-def fetch_image_data_uri(*args, **kwargs):
-    return _legacy_value("fetch_image_data_uri")(*args, **kwargs)
 
 class ConfirmRevokeView(discord.ui.View):
     def __init__(self, parent_view, target_message):
@@ -211,7 +65,7 @@ class ConfirmRevokeView(discord.ui.View):
 
     @discord.ui.button(label="Yes, Revoke", style=discord.ButtonStyle.danger)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_staff(interaction):
+        if not has_capability(interaction, "mod.undo"):
             await interaction.response.send_message("Access denied.", ephemeral=True)
             return
         await self.parent_view.finish_revoke(interaction, self.target_message)
@@ -230,7 +84,7 @@ class DenyAppealModal(discord.ui.Modal, title="Deny Appeal"):
         self.view = view
 
     async def on_submit(self, interaction: discord.Interaction):
-        if not is_staff(interaction):
+        if not has_capability(interaction, "mod.appeals"):
             await interaction.response.send_message("Access denied.", ephemeral=True)
             return
         embed = self.origin_message.embeds[0]
@@ -275,20 +129,20 @@ class RevokeAppealView(discord.ui.View):
 
     @discord.ui.button(label="Revoke Punishment", style=discord.ButtonStyle.danger, custom_id="revoke_punishment_btn")
     async def start_revoke(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_staff(interaction):
+        if not has_capability(interaction, "mod.undo"):
             await interaction.response.send_message("Access denied.", ephemeral=True)
             return
         await interaction.response.send_message("Are you sure you want to revoke this punishment?", view=ConfirmRevokeView(self, interaction.message), ephemeral=True)
 
     @discord.ui.button(label="Deny Appeal", style=discord.ButtonStyle.secondary, custom_id="deny_appeal_btn")
     async def deny_appeal(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_staff(interaction):
+        if not has_capability(interaction, "mod.appeals"):
             await interaction.response.send_message("Access denied.", ephemeral=True)
             return
         await interaction.response.send_modal(DenyAppealModal(self.target_id, interaction.message, self))
 
     async def finish_revoke(self, interaction: discord.Interaction, message: discord.Message):
-        if not is_staff(interaction):
+        if not has_capability(interaction, "mod.undo"):
             await interaction.response.send_message("Access denied.", ephemeral=True)
             return
         await interaction.response.edit_message(content="Processing revocation...", view=None)
@@ -1564,7 +1418,7 @@ class RevokeUndoView(discord.ui.View):
 
     @discord.ui.button(label="Revoke Undo", style=discord.ButtonStyle.danger)
     async def revoke_undo(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_staff(interaction):
+        if not has_capability(interaction, "mod.undo"):
              await interaction.response.send_message("Access denied.", ephemeral=True)
              return
 

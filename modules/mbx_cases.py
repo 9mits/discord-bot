@@ -1,8 +1,4 @@
-"""Case and punishment record helpers.
-
-Extracted from mbx_legacy. Owns: risk scoring, undo/reversal logic, case
-summary formatters, and embed builders for history/case panels.
-"""
+"""Case and punishment record helpers."""
 from __future__ import annotations
 
 import copy

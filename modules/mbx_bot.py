@@ -12,7 +12,6 @@ from discord.ext import commands, tasks
 
 from modules.mbx_constants import (
     BOT_OWNER_IDS,
-    DEFAULT_GUILD_ID,
     DEV_GUILD_ID,
     SCOPE_ROLES,
     SCOPE_SUPPORT,
@@ -30,6 +29,7 @@ EXTENSIONS = (
     "cogs.moderation",
     "cogs.modmail",
     "cogs.automod",
+    "cogs.onboarding",
     "cogs.system",
     "cogs.dev",
 )
@@ -56,6 +56,7 @@ class MGXBot(commands.Bot):
         self.active_executions = {}
         self.dm_modmail_prompt_cooldowns: Dict[int, float] = {}
         self.native_automod_event_cache: Dict[Tuple[int, int, int, str, str], float] = {}
+        self.start_wizard_sessions: Dict[Tuple[int, int], object] = {}
         self.abuse_system = None
         self._guild_command_cleanup_done = False
 
