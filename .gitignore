@@ -18,3 +18,8 @@ venv/
 
 # Claude Code
 .claude/
+
+# Database (runtime artifact)
+database/*.db
+database/*.db-shm
+database/*.db-wal
