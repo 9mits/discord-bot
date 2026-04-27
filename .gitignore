@@ -23,3 +23,8 @@ venv/
 database/*.db
 database/*.db-shm
 database/*.db-wal
+servers/*/database/*.db
+servers/*/database/*.db-shm
+servers/*/database/*.db-wal
+servers/*/database/*.json
+servers/*/database/*.json.migrated

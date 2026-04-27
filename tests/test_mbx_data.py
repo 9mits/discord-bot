@@ -72,6 +72,13 @@ class MbxDataTests(unittest.TestCase):
         self.assertEqual(self.manager._configs, {})
         self.assertEqual(self.manager._message_caches, {})
 
+    def test_configured_path_resolves_relative_to_base_dir(self):
+        with patch.dict(os.environ, {"MBX_DATA_DIR": "servers/server-1/database"}, clear=True):
+            self.assertEqual(
+                mbx_data._configured_path("MBX_DATA_DIR", mbx_data.BASE_DIR / "database"),
+                mbx_data.BASE_DIR / "servers/server-1/database",
+            )
+
     def test_resolve_bot_token_prefers_environment_variable(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_file = Path(temp_dir) / "config.json"

@@ -29,7 +29,11 @@ def ensure_runtime_dependencies():
 
 
 def load_env_file():
-    env_path = Path(__file__).resolve().parent / ".env"
+    base_dir = Path(__file__).resolve().parent
+    configured_env = os.getenv("MBX_ENV_FILE")
+    env_path = Path(configured_env).expanduser() if configured_env else base_dir / ".env"
+    if not env_path.is_absolute():
+        env_path = base_dir / env_path
     if not env_path.exists():
         return
     with env_path.open("r", encoding="utf-8") as f:
