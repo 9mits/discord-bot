@@ -12,7 +12,7 @@ guilda/
   servers/
     server-1/
       .env              # first bot token and data path
-      database/         # first bot config, cases, modmail, roles, pings
+      database/         # old/current bot data belongs here
     server-2/
       .env              # second bot token and data path
       database/         # second bot config, cases, modmail, roles, pings
@@ -20,6 +20,14 @@ guilda/
 
 Each server folder is private to that bot process. Do not put the same token in
 both `.env` files.
+
+The root `database/` folder is only the old fallback location. For the clean
+two-server layout, move the old root database into `servers/server-1/database/`.
+Run this once if the old files still exist:
+
+```bash
+./scripts/move_root_database_to_server_1.sh
+```
 
 ## Server 1
 
@@ -52,4 +60,4 @@ Run:
 ```
 
 The old root `database/` folder is still the default when no `MBX_DATA_DIR` is
-set.
+set, but the recommended layout is to always run through the server scripts.

@@ -52,7 +52,7 @@ guilda/
   servers/
     server-1/
       .env              # DISCORD_BOT_TOKEN for bot one
-      database/         # bot one's private data
+      database/         # old/current bot data belongs here
     server-2/
       .env              # DISCORD_BOT_TOKEN for bot two
       database/         # bot two's private data
@@ -81,6 +81,13 @@ Then run:
 
 Because each process points at a different `database/` folder, config, cases,
 modmail, pings, roles, and setup state stay completely separate.
+
+If this install already has data in the old root `database/` folder, move it to
+server 1 once:
+
+```bash
+./scripts/move_root_database_to_server_1.sh
+```
 
 If the host panel does not expose environment variables, edit the `.env` file
 in the server file manager instead.

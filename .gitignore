@@ -20,6 +20,8 @@ venv/
 .claude/
 
 # Database (runtime artifact)
+database/*.json
+database/*.json.migrated
 database/*.db
 database/*.db-shm
 database/*.db-wal
