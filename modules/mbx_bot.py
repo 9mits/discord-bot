@@ -19,7 +19,6 @@ from modules.mbx_constants import (
 )
 from modules.mbx_context import set_bot
 from modules.mbx_data import DataManager, resolve_bot_token
-from modules.mbx_fleet import write_fleet_snapshot
 from modules.mbx_services import get_feature_flag, ticket_needs_sla_alert
 from modules.mbx_utils import iso_to_dt, now_iso
 
@@ -179,8 +178,6 @@ class MGXBot(commands.Bot):
     async def on_ready(self):
         logger.info("[READY] Logged in as %s (ID: %s). System operational.", self.user, self.user.id)
         self.start_time = time.time()
-        if self.data_manager:
-            await write_fleet_snapshot(self)
         await self._auto_sync_global()
         await self._cleanup_stale_guild_commands()
 
@@ -323,8 +320,6 @@ class MGXBot(commands.Bot):
     @tasks.loop(minutes=30)
     async def status_task(self):
         await self.change_presence(activity=discord.Game(name="DM for modmail"))
-        if self.data_manager:
-            await write_fleet_snapshot(self)
 
     @tasks.loop(minutes=10)
     async def modmail_sla_task(self):

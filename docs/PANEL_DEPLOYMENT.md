@@ -32,45 +32,32 @@ mbx_main.py
 
 ## Token Variables
 
-For a normal single bot, set this panel environment variable:
+Each cloned bot folder/server should have its own `.env` file with one token:
 
-```text
+```env
 DISCORD_BOT_TOKEN=your_token_here
 ```
 
-For the two-folder setup, use separate variables so each panel server is clear.
+Do not reuse the same `.env` between clones. To run a second bot, clone or copy
+the whole repository into a second server/folder and put that bot's different
+token in that clone's `.env`.
 
-Guild 1:
-
-```text
-PRIMARY_BOT_TOKEN=your_first_token_here
-MBX_INSTANCE_ID=guild-1
-MBX_DATA_DIR=database/instances/guild-1
-MBX_FLEET_DB_FILE=database/shared/fleet_status.db
-```
-
-Guild 2:
+Example layout:
 
 ```text
-SECONDARY_BOT_TOKEN=your_second_token_here
-MBX_INSTANCE_ID=guild-2
-MBX_DATA_DIR=database/instances/guild-2
-MBX_FLEET_DB_FILE=database/shared/fleet_status.db
+bot-one/
+  .env                  # DISCORD_BOT_TOKEN for bot one
+  database/             # bot one's private data
+  mbx_main.py
+
+bot-two/
+  .env                  # DISCORD_BOT_TOKEN for bot two
+  database/             # bot two's private data
+  mbx_main.py
 ```
 
-If your panel supports custom env vars reliably, you can also set
-`MBX_TOKEN_ENV_VAR` to the token variable name for that instance. The bot now
-accepts `PRIMARY_BOT_TOKEN` and `SECONDARY_BOT_TOKEN` directly too, so that
-extra setting is optional.
+Because each clone has its own `database/` folder, config, cases, modmail,
+pings, roles, and setup state stay completely separate.
 
-For the multi-instance launchers, run one process with:
-
-```bash
-./scripts/run_guild_1.sh
-```
-
-and the other with:
-
-```bash
-./scripts/run_guild_2.sh
-```
+If the host panel does not expose environment variables, edit the `.env` file
+in the server file manager instead.

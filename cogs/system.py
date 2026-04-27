@@ -1007,7 +1007,7 @@ async def on_guild_role_update(before: discord.Role, after: discord.Role):
 @app_commands.default_permissions(moderate_members=True)
 @require_capability("system.status")
 async def status_cmd(interaction: discord.Interaction):
-    embed = await build_status_embed(interaction.guild)
+    embed = build_status_embed(interaction.guild)
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.event

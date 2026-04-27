@@ -34,7 +34,6 @@ from modules.mbx_embeds import (
     _set_footer_branding,
 )
 from modules.mbx_formatters import *
-from modules.mbx_fleet import build_status_numbers
 from modules.mbx_images import *
 from modules.mbx_images import (
     _format_image_size_limit,
@@ -308,7 +307,7 @@ def build_setup_validation_embed(guild: discord.Guild, findings: List[Any]) -> d
         embed.add_field(name=section, value=truncate_text("\n".join(messages), 1024), inline=False)
     return embed
 
-async def build_status_embed(guild: discord.Guild) -> discord.Embed:
+def build_status_embed(guild: discord.Guild) -> discord.Embed:
     latency = round(bot.latency * 1000)
     uptime_seconds = int(time.time() - bot.start_time)
     days, remainder = divmod(uptime_seconds, 86400)
@@ -323,24 +322,20 @@ async def build_status_embed(guild: discord.Guild) -> discord.Embed:
     else:
         latency_label = f"`{latency}ms` — High"
 
-    instance, fleet = await build_status_numbers(bot)
+    total_records = sum(len(records) for records in bot.data_manager.punishments.values())
+    open_tickets = sum(1 for ticket in bot.data_manager.modmail.values() if ticket.get("status") == "open")
     embed = make_embed(
         "System Status",
-        "> Operational health for this runtime and the shared bot fleet.",
+        "> Operational health for runtime and staff-facing systems.",
         kind="info",
         scope=SCOPE_SYSTEM,
         guild=guild,
     )
     embed.add_field(name="Latency", value=latency_label, inline=True)
     embed.add_field(name="Uptime", value=f"`{uptime_str}`", inline=True)
-    embed.add_field(name="Instance Servers", value=str(instance.guild_count), inline=True)
-    embed.add_field(name="Instance Members", value=str(instance.member_count), inline=True)
-    embed.add_field(name="Instance Cases", value=str(instance.total_cases), inline=True)
-    embed.add_field(name="Fleet Bots", value=str(fleet.instance_count), inline=True)
-    embed.add_field(name="Fleet Servers", value=str(fleet.guild_count), inline=True)
-    embed.add_field(name="Fleet Members", value=str(fleet.member_count), inline=True)
-    embed.add_field(name="Fleet Cases", value=str(fleet.total_cases), inline=True)
-    embed.add_field(name="Open Tickets", value=str(fleet.open_tickets), inline=True)
+    embed.add_field(name="Members", value=str(guild.member_count or 0), inline=True)
+    embed.add_field(name="Open Tickets", value=str(open_tickets), inline=True)
+    embed.add_field(name="Punishment Records", value=str(total_records), inline=True)
     embed.add_field(name="Cache Size", value=str(len(bot.data_manager.message_cache)), inline=True)
     return embed
 
