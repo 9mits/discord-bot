@@ -39,7 +39,9 @@ Or use the launcher scripts:
 ## Environment Variables
 
 - `MBX_TOKEN_ENV_VAR`: name of the environment variable that holds this
-  process's Discord token.
+  process's Discord token. This is optional when you use one of the built-in
+  names: `DISCORD_BOT_TOKEN`, `MBX_BOT_TOKEN`, `PRIMARY_BOT_TOKEN`, or
+  `SECONDARY_BOT_TOKEN`.
 - `MBX_DATA_DIR`: per-instance data directory. This controls legacy JSON paths
   and defaults the per-instance SQLite DB to `<MBX_DATA_DIR>/saori.db`.
 - `MBX_DB_FILE`: optional explicit per-instance SQLite DB path.

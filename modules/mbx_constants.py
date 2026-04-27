@@ -12,7 +12,7 @@ import discord
 # Bot identity
 # ---------------------------------------------------------------------------
 BRAND_NAME = "Mysterious Bot X"
-TOKEN_ENV_VARS = ("DISCORD_BOT_TOKEN", "MBX_BOT_TOKEN")
+TOKEN_ENV_VARS = ("DISCORD_BOT_TOKEN", "MBX_BOT_TOKEN", "PRIMARY_BOT_TOKEN", "SECONDARY_BOT_TOKEN")
 
 # ---------------------------------------------------------------------------
 # Guild / Discord IDs  (fallbacks used before config.json is loaded)

@@ -96,6 +96,17 @@ class MbxDataTests(unittest.TestCase):
             ):
                 self.assertEqual(mbx_data.resolve_bot_token(), "secondary-secret")
 
+    def test_resolve_bot_token_accepts_primary_token_env_var(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_file = Path(temp_dir) / "config.json"
+
+            with patch.object(mbx_data, "CONFIG_FILE", config_file), patch.dict(
+                os.environ,
+                {"PRIMARY_BOT_TOKEN": "primary-secret"},
+                clear=True,
+            ):
+                self.assertEqual(mbx_data.resolve_bot_token(), "primary-secret")
+
     def test_resolve_bot_token_rejects_config_json_fallback(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_file = Path(temp_dir) / "config.json"
