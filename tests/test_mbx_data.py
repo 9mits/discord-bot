@@ -80,6 +80,22 @@ class MbxDataTests(unittest.TestCase):
             with patch.object(mbx_data, "CONFIG_FILE", config_file), patch.dict(os.environ, {"CUSTOM_BOT_TOKEN": "env-secret"}, clear=True):
                 self.assertEqual(mbx_data.resolve_bot_token(), "env-secret")
 
+    def test_resolve_bot_token_prefers_forced_token_env_var(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_file = Path(temp_dir) / "config.json"
+            config_file.write_text('{"token_env_var": "CUSTOM_BOT_TOKEN"}', encoding="utf-8")
+
+            with patch.object(mbx_data, "CONFIG_FILE", config_file), patch.dict(
+                os.environ,
+                {
+                    "MBX_TOKEN_ENV_VAR": "SECOND_BOT_TOKEN",
+                    "CUSTOM_BOT_TOKEN": "primary-secret",
+                    "SECOND_BOT_TOKEN": "secondary-secret",
+                },
+                clear=True,
+            ):
+                self.assertEqual(mbx_data.resolve_bot_token(), "secondary-secret")
+
     def test_resolve_bot_token_rejects_config_json_fallback(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_file = Path(temp_dir) / "config.json"

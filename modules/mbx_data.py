@@ -55,7 +55,17 @@ logger = logging.getLogger("MGXBot")
 
 # ----------------- PATHS -----------------
 BASE_DIR = Path(__file__).resolve().parent.parent
-DB_DIR = BASE_DIR / "database"
+
+
+def _configured_path(env_name: str, default: Path) -> Path:
+    raw = os.getenv(env_name)
+    if not raw:
+        return default
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+DB_DIR = _configured_path("MBX_DATA_DIR", BASE_DIR / "database")
 ROLES_FILE = DB_DIR / "roles.json"
 CONFIG_FILE = DB_DIR / "config.json"
 PUNISHMENTS_FILE = DB_DIR / "punishments.json"
@@ -64,7 +74,7 @@ MESSAGE_CACHE_FILE = DB_DIR / "message_cache.json"
 PINGS_FILE = DB_DIR / "pings.json"
 LOCKDOWN_FILE = DB_DIR / "lockdown.json"
 MODMAIL_FILE = DB_DIR / "modmail.json"
-SAORI_DB = DB_DIR / "saori.db"
+SAORI_DB = _configured_path("MBX_DB_FILE", DB_DIR / "saori.db")
 # -----------------------------------------
 
 
@@ -90,6 +100,10 @@ def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
 def resolve_bot_token() -> str:
     bootstrap_config = read_json_file(CONFIG_FILE, {})
     env_var_order: List[str] = []
+
+    forced_env_var = os.getenv("MBX_TOKEN_ENV_VAR")
+    if forced_env_var:
+        env_var_order.append(forced_env_var.strip())
 
     configured_env_var = bootstrap_config.get("token_env_var")
     if isinstance(configured_env_var, str) and configured_env_var.strip():
@@ -534,6 +548,7 @@ class DataManager:
 
     async def _init_db(self) -> None:
         DB_DIR.mkdir(parents=True, exist_ok=True)
+        SAORI_DB.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(SAORI_DB)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode=WAL")
