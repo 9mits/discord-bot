@@ -51,6 +51,7 @@ from modules.mbx_logging import (
 )
 from modules.mbx_permissions import (
     DANGEROUS_PERMISSIONS,
+    can_use_command,
     get_context_guild,
     has_capability,
     has_dangerous_perm,
@@ -513,9 +514,24 @@ class ModGroup(app_commands.Group):
         super().__init__(name="mod", description="Advanced moderation suite")
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        # Group-level gate: anyone with any moderation capability passes.
-        # Each subcommand applies its own narrower capability check below.
-        if not has_capability(interaction, "mod.case_panel"):
+        # Group-level gate: let each subcommand use its own narrower
+        # capability. Requiring only mod.case_panel here blocks roles that can
+        # punish but cannot open case panels.
+        command_capabilities = {
+            "punish": "mod.punish",
+            "publicpunish": "mod.public_punish",
+            "history": "mod.history",
+            "active": "mod.active",
+            "undopunish": "mod.undo",
+            "purge": "mod.purge",
+            "lock": "mod.lock",
+            "unlock": "mod.lock",
+            "case": "mod.case_panel",
+        }
+        command_name = getattr(getattr(interaction, "command", None), "name", None)
+        capability = command_capabilities.get(command_name, "mod.case_panel")
+        command_key = f"mod {command_name}" if command_name else "mod"
+        if not can_use_command(interaction, command_key, capability):
             await respond_with_error(
                 interaction,
                 "You do not have permission to use these moderation tools.",

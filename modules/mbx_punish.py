@@ -32,6 +32,13 @@ def get_valid_duration(minutes: int) -> timedelta:
     return timedelta(minutes=min(minutes, 40320))
 
 
+async def _send_ephemeral(interaction, content: str = None, *, embed: discord.Embed = None):
+    if interaction.response.is_done():
+        await interaction.followup.send(content=content, embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message(content=content, embed=embed, ephemeral=True)
+
+
 async def handle_abuse(*args, **kwargs):
     from modules.mbx_automod import handle_abuse as automod_handle_abuse
 
@@ -64,11 +71,14 @@ async def execute_punishment(interaction, target, moderator, reason, minutes, no
     # Anti-Abuse: Hierarchy Check
     if member_target and member_target.id != guild.owner_id and member_target != moderator:
         if member_target.top_role >= moderator.top_role:
-            await interaction.response.send_message("**Anti-Abuse:** You cannot punish a user with equal or higher role hierarchy.", ephemeral=True)
+            await _send_ephemeral(interaction, "**Anti-Abuse:** You cannot punish a user with equal or higher role hierarchy.")
             return
 
     # Anti-Abuse: Rate Limit
     if abuse_system.check_rate_limit(moderator.id):
+        if interaction.response.is_done():
+            await interaction.followup.send("Punishment rate limit triggered. Staff protection is reviewing this action.", ephemeral=True)
+            return
         await handle_abuse(interaction, moderator)
         return
 
