@@ -10,6 +10,23 @@ REQUIRED_PACKAGES = {
 }
 
 
+def _resolve_path(base_dir: Path, path: Path) -> Path:
+    return path if path.is_absolute() else base_dir / path
+
+
+def _has_token() -> bool:
+    return bool(os.getenv("DISCORD_BOT_TOKEN") or os.getenv("MBX_BOT_TOKEN"))
+
+
+def use_legacy_token_alias(alias: str):
+    """Map an old per-server token name to the normal runtime token key."""
+    if _has_token():
+        return
+    token = os.getenv(alias)
+    if token:
+        os.environ["DISCORD_BOT_TOKEN"] = token
+
+
 def ensure_runtime_dependencies():
     missing = [package for module, package in REQUIRED_PACKAGES.items() if find_spec(module) is None]
     if not missing:
@@ -41,14 +58,16 @@ def load_env_file():
 
     env_path = None
     for candidate in candidates:
-        if not candidate.is_absolute():
-            candidate = base_dir / candidate
+        candidate = _resolve_path(base_dir, candidate)
         if candidate.exists():
             env_path = candidate
             break
     if env_path is None:
+        checked = ", ".join(str(_resolve_path(base_dir, candidate)) for candidate in candidates)
+        print(f"[Startup]: No .env file found. Checked: {checked}", file=sys.stderr)
         return
 
+    print(f"[Startup]: Loading environment from {env_path}", file=sys.stderr)
     with env_path.open("r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -63,6 +82,7 @@ def load_env_file():
 
 if __name__ == "__main__":
     load_env_file()
+    use_legacy_token_alias("PRIMARY_BOT_TOKEN")
     ensure_runtime_dependencies()
     from modules.mbx_bot import run
 

@@ -38,6 +38,9 @@ DISCORD_BOT_TOKEN=first_bot_token
 MBX_DATA_DIR=servers/server-1/database
 ```
 
+If you still have the old `PRIMARY_BOT_TOKEN` key, `run_server_1.py` will use it
+as a fallback, but `DISCORD_BOT_TOKEN` is preferred.
+
 Run:
 
 ```bash
@@ -58,6 +61,9 @@ Create `servers/server-2/.env`:
 DISCORD_BOT_TOKEN=second_bot_token
 MBX_DATA_DIR=servers/server-2/database
 ```
+
+If you still have the old `SECONDARY_BOT_TOKEN` key, `run_server_2.py` will use
+it as a fallback, but `DISCORD_BOT_TOKEN` is preferred.
 
 Run:
 

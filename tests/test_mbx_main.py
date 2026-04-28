@@ -33,6 +33,11 @@ class MbxMainTests(unittest.TestCase):
                 mbx_main.load_env_file()
                 self.assertEqual(os.environ["DISCORD_BOT_TOKEN"], "token-one")
 
+    def test_use_legacy_token_alias_sets_discord_token(self):
+        with patch.dict(os.environ, {"PRIMARY_BOT_TOKEN": "legacy-token"}, clear=True):
+            mbx_main.use_legacy_token_alias("PRIMARY_BOT_TOKEN")
+            self.assertEqual(os.environ["DISCORD_BOT_TOKEN"], "legacy-token")
+
 
 if __name__ == "__main__":
     unittest.main()

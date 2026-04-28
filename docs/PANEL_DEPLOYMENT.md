@@ -81,6 +81,10 @@ DISCORD_BOT_TOKEN=second_bot_token
 MBX_DATA_DIR=servers/server-2/database
 ```
 
+The older names still work as a fallback when using the matching startup file:
+`PRIMARY_BOT_TOKEN` for `run_server_1.py` and `SECONDARY_BOT_TOKEN` for
+`run_server_2.py`. New installs should use `DISCORD_BOT_TOKEN`.
+
 Then run:
 
 ```bash
