@@ -24,11 +24,20 @@ SQLite. Without it, the bot exits with `ModuleNotFoundError: No module named
 
 ## Startup File
 
-Set the bot file/startup target to:
+For server 1, set the bot file/startup target to:
 
 ```text
-mbx_main.py
+run_server_1.py
 ```
+
+For server 2, use:
+
+```text
+run_server_2.py
+```
+
+If your panel can only run `mbx_main.py`, it will auto-load
+`servers/server-1/.env` when root `.env` is missing.
 
 ## Token Variables
 

@@ -44,6 +44,12 @@ Run:
 ./scripts/run_server_1.sh
 ```
 
+For hosting panels that run `python <file>`, set the startup file to:
+
+```text
+run_server_1.py
+```
+
 ## Server 2
 
 Create `servers/server-2/.env`:
@@ -57,6 +63,12 @@ Run:
 
 ```bash
 ./scripts/run_server_2.sh
+```
+
+For hosting panels that run `python <file>`, set the startup file to:
+
+```text
+run_server_2.py
 ```
 
 The old root `database/` folder is still the default when no `MBX_DATA_DIR` is
