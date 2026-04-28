@@ -1,43 +1,81 @@
-"""Onboarding slash command."""
-from __future__ import annotations
-
 import discord
 from discord import app_commands
 from discord.ext import commands
 
-from modules.mbx_context import bot, tree
-from modules.mbx_onboarding import create_session, persist_draft
-from modules.mbx_permissions import require_capability
-from ui.onboarding import OnboardingWizardView, build_onboarding_embed
+def is_mod():
+    async def predicate(interaction: discord.Interaction) -> bool:
+        config = await interaction.client.data.get_config()
+        mod_role_id = config.get("mod_role_id")
+        if not mod_role_id:
+            return interaction.user.guild_permissions.manage_messages
+        mod_role = interaction.guild.get_role(int(mod_role_id))
+        return mod_role in interaction.user.roles if mod_role else interaction.user.guild_permissions.manage_messages
+    return app_commands.check(predicate)
 
+class OnboardingCog(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
 
-@tree.command(name="start", description="Run the step-by-step server setup wizard")
-@app_commands.default_permissions(manage_guild=True)
-@require_capability("setup.run")
-async def start_cmd(interaction: discord.Interaction):
-    if not interaction.guild or not bot.data_manager:
-        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
-        return
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        config = await self.bot.data.get_config()
+        flags = config.get("feature_flags", {})
+        if not flags.get("onboarding_enabled"):
+            return
 
-    sessions = getattr(bot, "start_wizard_sessions", None)
-    if sessions is None:
-        bot.start_wizard_sessions = {}
-        sessions = bot.start_wizard_sessions
+        welcome_channel_id = config.get("welcome_channel_id")
+        if not welcome_channel_id:
+            return
+        channel = member.guild.get_channel(int(welcome_channel_id))
+        if not channel:
+            return
 
-    key = (interaction.guild.id, interaction.user.id)
-    session = sessions.get(key)
-    if session is None or session.expired():
-        session = create_session(interaction.guild.id, interaction.user.id, bot.data_manager.config)
-        sessions[key] = session
+        await self.bot.data.set_onboarding(member.id)
 
-    persist_draft(bot.data_manager.config, session)
-    await bot.data_manager.save_config()
-    await interaction.response.send_message(
-        embed=build_onboarding_embed(interaction.guild, session),
-        view=OnboardingWizardView(session),
-        ephemeral=True,
-    )
+        from ui.onboarding import OnboardingView
+        embed = discord.Embed(
+            title=f"Welcome to {member.guild.name}!",
+            description=config.get("welcome_message", "Welcome! Please complete the onboarding below."),
+            color=0x5865F2
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        view = OnboardingView(self.bot.data, member.id, config)
+        await channel.send(f"{member.mention}", embed=embed, view=view)
 
+    @app_commands.command(name="onboarding_send", description="Send the onboarding panel")
+    @is_mod()
+    @app_commands.describe(channel="Channel to send panel in", user="Specific user (optional)")
+    async def onboarding_send(self, interaction: discord.Interaction, channel: discord.TextChannel = None, user: discord.Member = None):
+        config = await self.bot.data.get_config()
+        target = channel or interaction.channel
+        target_user = user or interaction.user
 
-async def setup(bot_instance: commands.Bot) -> None:
-    bot_instance.tree.add_command(start_cmd)
+        from ui.onboarding import OnboardingView
+        embed = discord.Embed(
+            title=f"Welcome to {interaction.guild.name}!",
+            description=config.get("welcome_message", "Please complete the onboarding below."),
+            color=0x5865F2
+        )
+        view = OnboardingView(self.bot.data, target_user.id, config)
+        await target.send(f"{target_user.mention}", embed=embed, view=view)
+        await interaction.response.send_message(f"Onboarding sent in {target.mention}", ephemeral=True)
+
+    @app_commands.command(name="onboarding_status", description="Check a user's onboarding status")
+    @is_mod()
+    @app_commands.describe(user="User to check")
+    async def onboarding_status(self, interaction: discord.Interaction, user: discord.Member):
+        data = await self.bot.data.get_onboarding(user.id)
+        if not data:
+            await interaction.response.send_message(f"{user.mention} has not started onboarding.", ephemeral=True)
+            return
+
+        import json
+        embed = discord.Embed(title=f"Onboarding — {user.display_name}", color=0x5865F2)
+        embed.add_field(name="Completed", value="Yes" if data["completed"] else "No", inline=True)
+        embed.add_field(name="Step", value=str(data["step"]), inline=True)
+        roles_granted = json.loads(data.get("roles_granted", "[]"))
+        embed.add_field(name="Roles Granted", value=str(len(roles_granted)), inline=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+async def setup(bot):
+    await bot.add_cog(OnboardingCog(bot))
